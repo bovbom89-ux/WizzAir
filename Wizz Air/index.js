@@ -6,26 +6,22 @@ const path = require("node:path");
 const {
   Client,
   GatewayIntentBits,
+  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
   ChannelType,
   EmbedBuilder,
-  AttachmentBuilder,
+  MessageFlags,
 } = require("discord.js");
-
-// ======================================================
-// GARDEN ADVENTURES BOT
-// Standalone Discord bot
-// ======================================================
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || "";
 
 const GREEN = 0x2E8B57;
-const GOLD = 0xF1C40F;
+const MAX_REASON = 900;
 
 if (!TOKEN || !CLIENT_ID) {
   console.error("Missing DISCORD_TOKEN or CLIENT_ID in .env");
@@ -36,22 +32,28 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [
+    Partials.Message,
+    Partials.Channel,
+    Partials.Reaction,
   ],
 });
 
-const DATA_FOLDER = path.join(__dirname, "data");
-const DATA_FILE = path.join(DATA_FOLDER, "garden-data.json");
+const DATA_DIR = path.join(__dirname, "data");
+const DATA_FILE = path.join(DATA_DIR, "garden-data.json");
 
-if (!fs.existsSync(DATA_FOLDER)) {
-  fs.mkdirSync(DATA_FOLDER, { recursive: true });
-}
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const DEFAULT_DATA = {
-  users: {},
   warnings: {},
-  tickets: {},
-  events: {},
-  config: {},
+  cases: {},
+  nextCaseId: 1,
+  notificationPanels: {},
+  maintenance: {},
 };
 
 function loadData() {
@@ -63,9 +65,15 @@ function loadData() {
       );
     }
 
+    const old = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+
     return {
       ...structuredClone(DEFAULT_DATA),
-      ...JSON.parse(fs.readFileSync(DATA_FILE, "utf8")),
+      warnings: old.warnings || {},
+      cases: old.cases || {},
+      nextCaseId: Number(old.nextCaseId) || 1,
+      notificationPanels: old.notificationPanels || {},
+      maintenance: old.maintenance || {},
     };
   } catch (error) {
     console.error("Could not load data:", error);
@@ -86,166 +94,161 @@ function saveData() {
   fs.renameSync(temporary, DATA_FILE);
 }
 
-function embed(title, description) {
+function makeEmbed(title, description) {
   return new EmbedBuilder()
     .setColor(GREEN)
-    .setTitle(title)
-    .setDescription(description)
+    .setTitle(String(title).slice(0, 256))
+    .setDescription(String(description).slice(0, 4000))
     .setTimestamp();
 }
 
-function getProfile(userId) {
-  if (!db.users[userId]) {
-    db.users[userId] = {
-      coins: 100,
-      seeds: {
-        carrot: 2,
-      },
-      garden: [],
-      pets: [],
-      daily: 0,
-    };
+async function privateReply(interaction, payload) {
+  const options =
+    typeof payload === "string"
+      ? { content: payload }
+      : { ...payload };
+
+  options.flags = MessageFlags.Ephemeral;
+  delete options.ephemeral;
+
+  if (interaction.deferred) {
+    return interaction.editReply(options);
   }
 
-  const profile = db.users[userId];
+  if (interaction.replied) {
+    return interaction.followUp(options);
+  }
 
-  profile.coins ??= 100;
-  profile.seeds ??= { carrot: 2 };
-  profile.garden ??= [];
-  profile.pets ??= [];
-  profile.daily ??= 0;
+  return interaction.reply(options);
+}
 
-  return profile;
+async function deny(interaction, message) {
+  return privateReply(interaction, message);
+}
+
+function hasPermission(interaction, permission) {
+  return Boolean(
+    interaction.memberPermissions?.has(permission)
+  );
 }
 
 function isStaff(interaction) {
-  return interaction.memberPermissions?.has(
-    PermissionFlagsBits.ModerateMembers
-  ) || interaction.memberPermissions?.has(
-    PermissionFlagsBits.ManageGuild
-  ) || interaction.memberPermissions?.has(
-    PermissionFlagsBits.Administrator
+  return Boolean(
+    interaction.memberPermissions?.has(
+      PermissionFlagsBits.ModerateMembers
+    ) ||
+    interaction.memberPermissions?.has(
+      PermissionFlagsBits.ManageGuild
+    ) ||
+    interaction.memberPermissions?.has(
+      PermissionFlagsBits.Administrator
+    )
   );
 }
 
 function isAdmin(interaction) {
-  return interaction.memberPermissions?.has(
-    PermissionFlagsBits.Administrator
-  );
-}
-
-function isTicketStaff(interaction) {
-  const configuredRole =
-    db.config[interaction.guildId]?.staffRoleId;
-
-  if (isStaff(interaction)) return true;
-
   return Boolean(
-    configuredRole &&
-    interaction.member?.roles?.cache?.has(configuredRole)
+    interaction.memberPermissions?.has(
+      PermissionFlagsBits.Administrator
+    )
   );
 }
 
-async function replyError(interaction, message) {
-  const payload = {
-    content: message,
-    ephemeral: true,
+function recordCase(
+  guildId,
+  targetId,
+  moderatorId,
+  action,
+  reason,
+  extra = {}
+) {
+  const id = String(db.nextCaseId++);
+
+  const entry = {
+    id,
+    guildId,
+    targetId,
+    moderatorId,
+    action,
+    reason: String(reason || "No reason provided")
+      .slice(0, MAX_REASON),
+    timestamp: Date.now(),
+    ...extra,
   };
 
-  if (interaction.deferred) {
-    return interaction.editReply(payload);
-  }
+  db.cases[id] = entry;
+  saveData();
 
-  if (interaction.replied) {
-    return interaction.followUp(payload);
-  }
-
-  return interaction.reply(payload);
+  return entry;
 }
 
-async function sendConfigured(guild, key, messageEmbed) {
-  const channelId = db.config[guild.id]?.[key];
+async function logModeration(guild, entry) {
+  const channel = guild.systemChannel;
 
-  if (!channelId) return false;
-
-  const channel = await guild.channels.fetch(channelId)
-    .catch(() => null);
-
-  if (!channel?.isTextBased()) return false;
-
-  await channel.send({ embeds: [messageEmbed] });
-  return true;
-}
-
-const SEEDS = {
-  carrot: {
-    price: 10,
-    reward: 20,
-    growSeconds: 60,
-  },
-  strawberry: {
-    price: 25,
-    reward: 50,
-    growSeconds: 120,
-  },
-  sunflower: {
-    price: 50,
-    reward: 100,
-    growSeconds: 180,
-  },
-  pumpkin: {
-    price: 100,
-    reward: 220,
-    growSeconds: 300,
-  },
-};
-
-const PETS = [
-  { name: "Bunny", rarity: "Common", chance: 50 },
-  { name: "Cat", rarity: "Common", chance: 30 },
-  { name: "Fox", rarity: "Rare", chance: 15 },
-  { name: "Golden Bee", rarity: "Legendary", chance: 5 },
-];
-
-function choosePet() {
-  const roll = Math.random() * 100;
-  let total = 0;
-
-  for (const pet of PETS) {
-    total += pet.chance;
-
-    if (roll < total) {
-      return pet;
-    }
+  if (
+    !channel?.isTextBased() ||
+    !channel.permissionsFor(guild.members.me)
+      ?.has(PermissionFlagsBits.SendMessages)
+  ) {
+    return;
   }
 
-  return PETS[0];
+  await channel.send({
+    embeds: [
+      makeEmbed(
+        `Moderation Case #${entry.id}`,
+        `**Action:** ${entry.action}\n` +
+        `**Member:** <@${entry.targetId}>\n` +
+        `**Moderator:** <@${entry.moderatorId}>\n` +
+        `**Reason:** ${entry.reason}`
+      ),
+    ],
+  }).catch(() => null);
 }
 
-// ======================================================
-// SLASH COMMANDS
-// ======================================================
+function canManageRoles(member) {
+  return Boolean(
+    member?.permissions?.has(
+      PermissionFlagsBits.ManageRoles
+    ) ||
+    member?.permissions?.has(
+      PermissionFlagsBits.ManageGuild
+    ) ||
+    member?.permissions?.has(
+      PermissionFlagsBits.Administrator
+    )
+  );
+}
 
 const commands = [
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("View Garden Adventures commands"),
-
-  new SlashCommandBuilder()
-    .setName("rules")
-    .setDescription("View the community rules"),
+    .setDescription("View Garden Adventures bot commands"),
 
   new SlashCommandBuilder()
     .setName("serverinfo")
     .setDescription("View server information"),
 
   new SlashCommandBuilder()
+    .setName("membercount")
+    .setDescription("View the server member count"),
+
+  new SlashCommandBuilder()
     .setName("memberinfo")
-    .setDescription("View member information")
+    .setDescription("View information about a member")
     .addUserOption(o =>
       o.setName("member")
         .setDescription("Member to inspect")
         .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("profile")
+    .setDescription("View a member's server profile")
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to inspect")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -262,12 +265,13 @@ const commands = [
     .addStringOption(o =>
       o.setName("reason")
         .setDescription("Reason")
+        .setMaxLength(900)
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("warnings")
-    .setDescription("View member warnings")
+    .setDescription("View a member's warnings")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ModerateMembers
     )
@@ -290,7 +294,7 @@ const commands = [
     )
     .addIntegerOption(o =>
       o.setName("minutes")
-        .setDescription("Timeout duration in minutes")
+        .setDescription("Duration in minutes")
         .setMinValue(1)
         .setMaxValue(40320)
         .setRequired(true)
@@ -298,6 +302,7 @@ const commands = [
     .addStringOption(o =>
       o.setName("reason")
         .setDescription("Reason")
+        .setMaxLength(900)
         .setRequired(true)
     ),
 
@@ -315,6 +320,7 @@ const commands = [
     .addStringOption(o =>
       o.setName("reason")
         .setDescription("Reason")
+        .setMaxLength(900)
         .setRequired(true)
     ),
 
@@ -332,6 +338,7 @@ const commands = [
     .addStringOption(o =>
       o.setName("reason")
         .setDescription("Reason")
+        .setMaxLength(900)
         .setRequired(true)
     ),
 
@@ -350,273 +357,217 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("gameupdate")
-    .setDescription("Publish a game update")
+    .setName("slowmode")
+    .setDescription("Set a channel's slowmode")
     .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
+      PermissionFlagsBits.ManageChannels
     )
-    .addStringOption(o =>
-      o.setName("title")
-        .setDescription("Update title")
+    .addIntegerOption(o =>
+      o.setName("seconds")
+        .setDescription("Seconds; 0 disables slowmode")
+        .setMinValue(0)
+        .setMaxValue(21600)
         .setRequired(true)
     )
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel; defaults to this channel")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("lock")
+    .setDescription("Lock a text channel")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageChannels
+    )
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel; defaults to this channel")
+        .addChannelTypes(
+          ChannelType.GuildText,
+          ChannelType.GuildAnnouncement
+        )
+        .setRequired(false)
+    )
     .addStringOption(o =>
-      o.setName("details")
-        .setDescription("Update details")
+      o.setName("reason")
+        .setDescription("Reason for locking")
+        .setMaxLength(500)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("unlock")
+    .setDescription("Unlock a text channel")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageChannels
+    )
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel; defaults to this channel")
+        .addChannelTypes(
+          ChannelType.GuildText,
+          ChannelType.GuildAnnouncement
+        )
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("purgeuser")
+    .setDescription("Delete a member's recent messages")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageMessages
+    )
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member whose messages to delete")
+        .setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("amount")
+        .setDescription("Messages to scan")
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("case")
+    .setDescription("View a moderation case")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ModerateMembers
+    )
+    .addIntegerOption(o =>
+      o.setName("id")
+        .setDescription("Case ID")
+        .setMinValue(1)
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("announce")
-    .setDescription("Publish an announcement")
+    .setDescription("Publish a public announcement")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
+    )
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel to publish in")
+        .addChannelTypes(
+          ChannelType.GuildText,
+          ChannelType.GuildAnnouncement
+        )
+        .setRequired(true)
     )
     .addStringOption(o =>
       o.setName("title")
         .setDescription("Announcement title")
+        .setMaxLength(256)
         .setRequired(true)
     )
     .addStringOption(o =>
       o.setName("message")
         .setDescription("Announcement text")
+        .setMaxLength(4000)
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
-    .setName("bugreport")
-    .setDescription("Report a game bug")
+    .setName("poll")
+    .setDescription("Publish a public reaction poll")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel to publish in")
+        .addChannelTypes(
+          ChannelType.GuildText,
+          ChannelType.GuildAnnouncement
+        )
+        .setRequired(true)
+    )
     .addStringOption(o =>
-      o.setName("details")
-        .setDescription("Describe the bug")
+      o.setName("question")
+        .setDescription("Poll question")
+        .setMaxLength(200)
         .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("suggest")
-    .setDescription("Suggest a game feature")
+    )
     .addStringOption(o =>
-      o.setName("idea")
-        .setDescription("Describe your idea")
+      o.setName("options")
+        .setDescription("2–10 options separated by |")
+        .setMaxLength(800)
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
-    .setName("support")
-    .setDescription("Create a private support ticket"),
-
-  new SlashCommandBuilder()
-    .setName("ticketclaim")
-    .setDescription("Claim the current support ticket"),
-
-  new SlashCommandBuilder()
-    .setName("ticketclose")
-    .setDescription("Close the current support ticket"),
-
-  new SlashCommandBuilder()
-    .setName("event")
-    .setDescription("Manage community events")
-    .addSubcommand(s =>
-      s.setName("create")
-        .setDescription("Create an event")
-        .addStringOption(o =>
-          o.setName("name")
-            .setDescription("Event name")
-            .setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("time")
-            .setDescription("Event date and time")
-            .setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("details")
-            .setDescription("Event details")
-            .setRequired(true)
-        )
+    .setName("embed")
+    .setDescription("Publish a custom public embed")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
     )
-    .addSubcommand(s =>
-      s.setName("list")
-        .setDescription("List community events")
-    )
-    .addSubcommand(s =>
-      s.setName("join")
-        .setDescription("Join an event")
-        .addStringOption(o =>
-          o.setName("id")
-            .setDescription("Event ID")
-            .setRequired(true)
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel to publish in")
+        .addChannelTypes(
+          ChannelType.GuildText,
+          ChannelType.GuildAnnouncement
         )
+        .setRequired(true)
     )
-    .addSubcommand(s =>
-      s.setName("cancel")
-        .setDescription("Cancel an event")
-        .addStringOption(o =>
-          o.setName("id")
-            .setDescription("Event ID")
-            .setRequired(true)
-        )
+    .addStringOption(o =>
+      o.setName("title")
+        .setDescription("Embed title")
+        .setMaxLength(256)
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("description")
+        .setDescription("Embed description")
+        .setMaxLength(4000)
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
-    .setName("config")
-    .setDescription("Configure bot channels and staff role")
+    .setName("notificationroles")
+    .setDescription("Create a reaction-role panel (staff only)")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageRoles
+    )
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel for the public role panel")
+        .addChannelTypes(
+          ChannelType.GuildText,
+          ChannelType.GuildAnnouncement
+        )
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("health")
+    .setDescription("Check bot health and storage status"),
+
+  new SlashCommandBuilder()
+    .setName("maintenance")
+    .setDescription("Enable or disable maintenance mode")
     .setDefaultMemberPermissions(
       PermissionFlagsBits.Administrator
     )
-    .addSubcommand(s =>
-      s.setName("channel")
-        .setDescription("Set a bot channel")
-        .addStringOption(o =>
-          o.setName("type")
-            .setDescription("Channel purpose")
-            .setRequired(true)
-            .addChoices(
-              { name: "Game updates", value: "updatesChannelId" },
-              { name: "Bug reports", value: "reportsChannelId" },
-              { name: "Suggestions", value: "suggestionsChannelId" },
-              { name: "Welcome messages", value: "welcomeChannelId" },
-              { name: "Moderation logs", value: "logsChannelId" }
-            )
-        )
-        .addChannelOption(o =>
-          o.setName("channel")
-            .setDescription("Channel to use")
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
-        )
+    .addBooleanOption(o =>
+      o.setName("enabled")
+        .setDescription("Enable maintenance mode?")
+        .setRequired(true)
     )
-    .addSubcommand(s =>
-      s.setName("staffrole")
-        .setDescription("Set the support staff role")
-        .addRoleOption(o =>
-          o.setName("role")
-            .setDescription("Staff role")
-            .setRequired(true)
-        )
-    ),
-
-  new SlashCommandBuilder()
-    .setName("balance")
-    .setDescription("View your garden coins"),
-
-  new SlashCommandBuilder()
-    .setName("daily")
-    .setDescription("Claim your daily coins"),
-
-  new SlashCommandBuilder()
-    .setName("shop")
-    .setDescription("View seeds and prices"),
-
-  new SlashCommandBuilder()
-    .setName("buy")
-    .setDescription("Buy seeds")
     .addStringOption(o =>
-      o.setName("seed")
-        .setDescription("Seed to purchase")
-        .setRequired(true)
-        .addChoices(
-          { name: "Carrot", value: "carrot" },
-          { name: "Strawberry", value: "strawberry" },
-          { name: "Sunflower", value: "sunflower" },
-          { name: "Pumpkin", value: "pumpkin" }
-        )
-    )
-    .addIntegerOption(o =>
-      o.setName("amount")
-        .setDescription("Number of seed packets")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
+      o.setName("reason")
+        .setDescription("Optional maintenance reason")
+        .setMaxLength(500)
+        .setRequired(false)
     ),
-
-  new SlashCommandBuilder()
-    .setName("garden")
-    .setDescription("Manage your garden")
-    .addSubcommand(s =>
-      s.setName("view")
-        .setDescription("View your garden")
-    )
-    .addSubcommand(s =>
-      s.setName("plant")
-        .setDescription("Plant a seed")
-        .addStringOption(o =>
-          o.setName("seed")
-            .setDescription("Seed to plant")
-            .setRequired(true)
-            .addChoices(
-              { name: "Carrot", value: "carrot" },
-              { name: "Strawberry", value: "strawberry" },
-              { name: "Sunflower", value: "sunflower" },
-              { name: "Pumpkin", value: "pumpkin" }
-            )
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("harvest")
-        .setDescription("Harvest a ready crop")
-        .addIntegerOption(o =>
-          o.setName("plot")
-            .setDescription("Plot number")
-            .setMinValue(1)
-            .setRequired(true)
-        )
-    ),
-
-  new SlashCommandBuilder()
-    .setName("sell")
-    .setDescription("Sell harvested crops")
-    .addStringOption(o =>
-      o.setName("crop")
-        .setDescription("Crop to sell")
-        .setRequired(true)
-        .addChoices(
-          { name: "Carrot", value: "carrot" },
-          { name: "Strawberry", value: "strawberry" },
-          { name: "Sunflower", value: "sunflower" },
-          { name: "Pumpkin", value: "pumpkin" }
-        )
-    )
-    .addIntegerOption(o =>
-      o.setName("amount")
-        .setDescription("Number of crops")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("pets")
-    .setDescription("View your pets"),
-
-  new SlashCommandBuilder()
-    .setName("egg")
-    .setDescription("Buy and hatch a pet egg")
-    .addSubcommand(s =>
-      s.setName("buy")
-        .setDescription("Buy a pet egg for 100 coins")
-        .addIntegerOption(o =>
-          o.setName("amount")
-            .setDescription("Number of eggs")
-            .setMinValue(1)
-            .setMaxValue(10)
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("hatch")
-        .setDescription("Hatch one of your eggs")
-    ),
-
-  new SlashCommandBuilder()
-    .setName("leaderboard")
-    .setDescription("View the richest gardeners"),
-
 ].map(command => command.toJSON());
-
-// ======================================================
-// REGISTER COMMANDS
-// ======================================================
 
 async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -627,44 +578,204 @@ async function registerCommands() {
 
   await rest.put(route, { body: commands });
 
-  console.log(
-    GUILD_ID
-      ? "Garden Adventures commands registered in the server."
-      : "Global commands registered; they may take time to appear."
-  );
+  console.log("Slash commands registered.");
 }
-
-// ======================================================
-// BOT READY
-// ======================================================
 
 client.once("ready", () => {
   console.log(`${client.user.tag} is online.`);
   client.user.setActivity("Garden Adventures");
 });
 
-// ======================================================
-// WELCOME MESSAGES
-// ======================================================
+// ---------------- Security protections ----------------
+
+const messageTimes = new Map();
+const recentMessages = new Map();
+const recentJoins = new Map();
+const raidModeUntil = new Map();
+
+function isStaffMember(member) {
+  return Boolean(
+    member?.permissions?.has(PermissionFlagsBits.ManageGuild) ||
+    member?.permissions?.has(PermissionFlagsBits.ManageMessages) ||
+    member?.permissions?.has(PermissionFlagsBits.Administrator) ||
+    member?.permissions?.has(PermissionFlagsBits.ModerateMembers)
+  );
+}
+
+async function sendSecurityAlert(guild, title, description) {
+  const channel = guild.systemChannel;
+
+  if (!channel?.isTextBased()) {
+    console.warn(`[${guild.name}] ${title}: ${description}`);
+    return;
+  }
+
+  if (!channel.permissionsFor(guild.members.me)
+    ?.has(PermissionFlagsBits.SendMessages)) return;
+
+  await channel.send({
+    embeds: [makeEmbed(title, description)],
+  }).catch(() => null);
+}
 
 client.on("guildMemberAdd", async member => {
-  try {
-    await sendConfigured(
+  const now = Date.now();
+  const times = (recentJoins.get(member.guild.id) || [])
+    .filter(time => now - time < 10000);
+
+  times.push(now);
+  recentJoins.set(member.guild.id, times);
+
+  if (times.length >= 6 &&
+      now > (raidModeUntil.get(member.guild.id) || 0)) {
+    raidModeUntil.set(member.guild.id, now + 60000);
+
+    await sendSecurityAlert(
       member.guild,
-      "welcomeChannelId",
-      embed(
-        "Welcome to Garden Adventures",
-        `Welcome, ${member}!\n\nExplore the community, share your ideas and get ready for your gardening adventures.`
-      )
+      "Possible Join Raid Detected",
+      `${times.length} members joined within 10 seconds. ` +
+      "Raid monitoring is active for 60 seconds. No automatic bans are applied."
     );
-  } catch (error) {
-    console.error("Welcome message error:", error);
   }
 });
 
-// ======================================================
-// INTERACTION HANDLER
-// ======================================================
+client.on("messageCreate", async message => {
+  try {
+    if (!message.guild || message.author.bot || !message.member) return;
+
+    const staff = isStaffMember(message.member);
+    const content = message.content || "";
+
+    const invitePattern =
+      /(?:https?:\/\/)?(?:www\.)?(?:discord\.gg\/|discord(?:app)?\.com\/invite\/)[\w-]+/i;
+
+    if (!staff && invitePattern.test(content)) {
+      await message.delete().catch(() => null);
+
+      const warning = await message.channel.send({
+        content: `${message.author}, Discord invite links are not allowed here.`,
+      }).catch(() => null);
+
+      if (warning) {
+        setTimeout(() => warning.delete().catch(() => null), 5000);
+      }
+      return;
+    }
+
+    if (staff) return;
+
+    const now = Date.now();
+    const key = `${message.guild.id}:${message.author.id}`;
+
+    const times = (messageTimes.get(key) || [])
+      .filter(time => now - time < 7000);
+
+    times.push(now);
+    messageTimes.set(key, times);
+
+    const recent = (recentMessages.get(key) || [])
+      .filter(item => now - item.time < 15000);
+
+    const normalized = content.trim().toLowerCase();
+
+    const duplicates = normalized
+      ? recent.filter(item => item.content === normalized).length
+      : 0;
+
+    recent.push({ time: now, content: normalized });
+    recentMessages.set(key, recent);
+
+    const raidActive = now < (raidModeUntil.get(message.guild.id) || 0);
+    const threshold = raidActive ? 4 : 6;
+
+    if (times.length >= threshold ||
+        (normalized.length >= 5 && duplicates >= 3)) {
+      await message.delete().catch(() => null);
+
+      const member = await message.guild.members
+        .fetch(message.author.id).catch(() => null);
+
+      if (member?.moderatable) {
+        await member.timeout(
+          60000,
+          "Automatic anti-spam protection"
+        ).catch(() => null);
+      }
+
+      await sendSecurityAlert(
+        message.guild,
+        "Anti-Spam Action",
+        `Anti-spam protection triggered for <@${message.author.id}> ` +
+        `in <#${message.channel.id}>.`
+      );
+
+      messageTimes.delete(key);
+      recentMessages.delete(key);
+    }
+  } catch (error) {
+    console.error("Message protection error:", error);
+  }
+});
+
+// ---------------- Reaction notification roles ----------------
+
+const ROLE_CHOICES = [
+  { emoji: "🎮", name: "Game Updates" },
+  { emoji: "📅", name: "Events" },
+  { emoji: "🎁", name: "Giveaways" },
+  { emoji: "📢", name: "Announcements" },
+  { emoji: "✨", name: "New Content" },
+  { emoji: "👀", name: "Sneak Peeks" },
+  { emoji: "🌿", name: "Community News" },
+];
+
+client.on("messageReactionAdd", async (reaction, user) => {
+  await handleRoleReaction(reaction, user, true);
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  await handleRoleReaction(reaction, user, false);
+});
+
+async function handleRoleReaction(reaction, user, adding) {
+  try {
+    if (user.bot) return;
+
+    if (reaction.partial) await reaction.fetch();
+
+    const message = reaction.message;
+    if (message.partial) await message.fetch();
+    if (!message.guild) return;
+
+    const panel = db.notificationPanels[message.id];
+    if (!panel || panel.guildId !== message.guild.id) return;
+
+    const choice = panel.roles.find(
+      role => role.emoji === reaction.emoji.name
+    );
+
+    if (!choice) return;
+
+    const guild = message.guild;
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    const role = await guild.roles.fetch(choice.roleId).catch(() => null);
+    const botMember = guild.members.me;
+
+    if (!member || !role || !botMember) return;
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) return;
+    if (role.position >= botMember.roles.highest.position) return;
+
+    if (adding) {
+      await member.roles.add(role, "Reaction notification role").catch(() => null);
+    } else {
+      await member.roles.remove(role, "Reaction removed from notification panel").catch(() => null);
+    }
+  } catch (error) {
+    console.error("Reaction-role error:", error);
+  }
+}
+
+// ---------------- Slash command handling ----------------
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -672,937 +783,656 @@ client.on("interactionCreate", async interaction => {
   const command = interaction.commandName;
 
   try {
-    // HELP
+    const maintenance = db.maintenance[interaction.guildId];
+
+    if (
+      maintenance?.enabled &&
+      !["health", "maintenance", "help"].includes(command) &&
+      !isAdmin(interaction)
+    ) {
+      return deny(
+        interaction,
+        `The bot is in maintenance mode. ${maintenance.reason || ""}`
+      );
+    }
+
     if (command === "help") {
-      return interaction.reply({
-        embeds: [embed(
-          "Garden Adventures Bot",
-          "**Community**\n/help, /rules, /serverinfo, /memberinfo\n\n" +
-          "**Moderation**\n/warn, /warnings, /timeout, /kick, /ban, /purge\n\n" +
-          "**Support**\n/support, /ticketclaim, /ticketclose\n\n" +
-          "**Updates**\n/gameupdate, /announce, /bugreport, /suggest\n\n" +
-          "**Events**\n/event create, /event list, /event join, /event cancel\n\n" +
-          "**Gardening**\n/balance, /daily, /shop, /buy, /garden, /sell\n\n" +
-          "**Pets**\n/pets, /egg buy, /egg hatch\n\n" +
-          "**Administration**\n/config channel, /config staffrole"
-        )],
-        ephemeral: true,
+      return privateReply(interaction, {
+        embeds: [
+          makeEmbed(
+            "Garden Adventures Bot",
+            "**Community**\n" +
+            "/help, /serverinfo, /membercount, /memberinfo, /profile\n\n" +
+            "**Moderation**\n" +
+            "/warn, /warnings, /timeout, /kick, /ban, /purge, " +
+            "/slowmode, /lock, /unlock, /purgeuser, /case\n\n" +
+            "**Publishing**\n" +
+            "/announce, /poll, /embed, /notificationroles\n\n" +
+            "**System**\n/health, /maintenance"
+          ),
+        ],
       });
     }
 
-    // RULES
-    if (command === "rules") {
-      return interaction.reply({
-        embeds: [embed(
-          "Community Rules",
-          "1. Respect everyone.\n" +
-          "2. No harassment, threats or hate.\n" +
-          "3. No spam or disruptive behaviour.\n" +
-          "4. Do not advertise without permission.\n" +
-          "5. Never share private information.\n" +
-          "6. Report bugs honestly.\n" +
-          "7. Follow Discord's Terms of Service.\n" +
-          "8. Follow staff instructions."
-        )],
-      });
-    }
-
-    // SERVER INFO
     if (command === "serverinfo") {
       const guild = interaction.guild;
 
-      return interaction.reply({
-        embeds: [embed(
-          guild.name,
-          `**Members:** ${guild.memberCount}\n` +
-          `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>\n` +
-          `**Server ID:** ${guild.id}`
-        ).setThumbnail(guild.iconURL())],
-      });
+      const embed = makeEmbed(
+        guild.name,
+        `**Members:** ${guild.memberCount}\n` +
+        `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>\n` +
+        `**Server ID:** \`${guild.id}\``
+      );
+
+      if (guild.iconURL()) embed.setThumbnail(guild.iconURL());
+
+      return privateReply(interaction, { embeds: [embed] });
     }
 
-    // MEMBER INFO
-    if (command === "memberinfo") {
-      const user = interaction.options.getUser("member");
-      const member = await interaction.guild.members.fetch(user.id)
-        .catch(() => null);
-
-      return interaction.reply({
-        embeds: [embed(
-          "Member Information",
-          `**Username:** ${user.tag}\n` +
-          `**ID:** ${user.id}\n` +
-          `**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:D>\n` +
-          `**Joined server:** ${member?.joinedTimestamp
-            ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:D>`
-            : "Unknown"}`
-        )],
-        ephemeral: true,
-      });
+    if (command === "membercount") {
+      return privateReply(
+        interaction,
+        `This server currently has **${interaction.guild.memberCount.toLocaleString()}** members.`
+      );
     }
 
-    // WARN
+    if (command === "memberinfo" || command === "profile") {
+      const user =
+        interaction.options.getUser("member") || interaction.user;
+
+      const member = await interaction.guild.members
+        .fetch(user.id).catch(() => null);
+
+      const roles = member
+        ? member.roles.cache
+            .filter(role => role.id !== interaction.guild.id)
+            .map(role => role.toString())
+            .slice(0, 15)
+            .join(", ") || "No roles"
+        : "Not currently in this server";
+
+      const embed = makeEmbed(
+        command === "profile"
+          ? `${user.username}'s Profile`
+          : "Member Information",
+        `**Username:** ${user.tag}\n` +
+        `**User ID:** \`${user.id}\`\n` +
+        `**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:F>\n` +
+        `**Joined server:** ${member?.joinedTimestamp
+          ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>`
+          : "Not available"}\n` +
+        `**Roles:** ${roles}`
+      );
+
+      embed.setThumbnail(user.displayAvatarURL());
+
+      return privateReply(interaction, { embeds: [embed] });
+    }
+
     if (command === "warn") {
-      if (!isStaff(interaction)) {
-        return replyError(interaction, "You do not have permission.");
+      if (!hasPermission(interaction, PermissionFlagsBits.ModerateMembers)) {
+        return deny(interaction, "You need the Moderate Members permission.");
       }
 
       const user = interaction.options.getUser("member");
       const reason = interaction.options.getString("reason");
 
-      if (user.id === interaction.user.id || user.bot) {
-        return replyError(interaction, "You cannot warn yourself or a bot.");
+      if (user.bot || user.id === interaction.user.id) {
+        return deny(interaction, "You cannot warn yourself or a bot.");
       }
 
-      if (!db.warnings[user.id]) db.warnings[user.id] = [];
+      const key = `${interaction.guildId}:${user.id}`;
+      const list = db.warnings[key] ||= [];
 
-      db.warnings[user.id].push({
+      list.push({
         reason,
         moderator: interaction.user.id,
         date: Date.now(),
-        guildId: interaction.guildId,
       });
+
+      const entry = recordCase(
+        interaction.guildId,
+        user.id,
+        interaction.user.id,
+        "Warning",
+        reason
+      );
 
       saveData();
 
       await user.send({
-        embeds: [embed(
-          "Community Warning",
-          `You received a warning in **${interaction.guild.name}**.\n**Reason:** ${reason}`
-        )],
+        embeds: [
+          makeEmbed(
+            "Community Warning",
+            `You received a warning in **${interaction.guild.name}**.\n` +
+            `**Reason:** ${reason}`
+          ),
+        ],
       }).catch(() => null);
 
-      await sendConfigured(
-        interaction.guild,
-        "logsChannelId",
-        embed(
-          "Member Warned",
-          `**Member:** ${user.tag}\n**Moderator:** ${interaction.user.tag}\n**Reason:** ${reason}`
-        )
-      ).catch(() => null);
+      await logModeration(interaction.guild, entry);
 
-      return interaction.reply({
-        embeds: [embed("Warning Recorded", `${user} has been warned.\n**Reason:** ${reason}`)],
-        ephemeral: true,
+      return privateReply(interaction, {
+        embeds: [
+          makeEmbed(
+            "Warning Recorded",
+            `${user} has been warned.\n**Case:** #${entry.id}\n` +
+            `**Reason:** ${reason}`
+          ),
+        ],
       });
     }
 
-    // WARNINGS
     if (command === "warnings") {
-      if (!isStaff(interaction)) {
-        return replyError(interaction, "You do not have permission.");
+      if (!hasPermission(interaction, PermissionFlagsBits.ModerateMembers)) {
+        return deny(interaction, "You need the Moderate Members permission.");
       }
 
       const user = interaction.options.getUser("member");
-      const warnings = (db.warnings[user.id] || [])
-        .filter(w => w.guildId === interaction.guildId);
+      const warnings = db.warnings[`${interaction.guildId}:${user.id}`] || [];
 
       const description = warnings.length
-        ? warnings.map((w, i) =>
-          `**${i + 1}.** ${w.reason}\nModerator: <@${w.moderator}> | <t:${Math.floor(w.date / 1000)}:d>`
-        ).join("\n\n")
-        : "No warnings recorded for this member in this server.";
+        ? warnings.map((warning, index) =>
+            `**${index + 1}.** ${warning.reason}\n` +
+            `Moderator: <@${warning.moderator}> · ` +
+            `<t:${Math.floor(warning.date / 1000)}:R>`
+          ).join("\n\n")
+        : "No warnings recorded for this member.";
 
-      return interaction.reply({
-        embeds: [embed(`Warnings: ${user.tag}`, description)],
-        ephemeral: true,
+      return privateReply(interaction, {
+        embeds: [makeEmbed(`Warnings: ${user.tag}`, description)],
       });
     }
 
-    // TIMEOUT
     if (command === "timeout") {
-      if (!interaction.memberPermissions.has(
-        PermissionFlagsBits.ModerateMembers
-      )) {
-        return replyError(interaction, "You need the Moderate Members permission.");
+      if (!hasPermission(interaction, PermissionFlagsBits.ModerateMembers)) {
+        return deny(interaction, "You need the Moderate Members permission.");
       }
 
       const user = interaction.options.getUser("member");
       const minutes = interaction.options.getInteger("minutes");
       const reason = interaction.options.getString("reason");
 
-      if (user.id === interaction.user.id) {
-        return replyError(interaction, "You cannot timeout yourself.");
+      if (user.id === interaction.user.id || user.id === client.user.id) {
+        return deny(interaction, "You cannot timeout yourself or the bot.");
       }
 
-      const member = await interaction.guild.members.fetch(user.id)
-        .catch(() => null);
+      const member = await interaction.guild.members
+        .fetch(user.id).catch(() => null);
 
       if (!member?.moderatable) {
-        return replyError(interaction, "I cannot timeout that member. Check my permissions and role position.");
+        return deny(interaction, "I cannot timeout that member. Check permissions and role positions.");
       }
 
       await member.timeout(minutes * 60000, reason);
 
-      return interaction.reply({
-        embeds: [embed(
-          "Member Timed Out",
-          `**Member:** ${user.tag}\n**Duration:** ${minutes} minutes\n**Reason:** ${reason}`
-        )],
-        ephemeral: true,
+      const entry = recordCase(
+        interaction.guildId,
+        user.id,
+        interaction.user.id,
+        "Timeout",
+        reason,
+        { durationMinutes: minutes }
+      );
+
+      await logModeration(interaction.guild, entry);
+
+      return privateReply(interaction, {
+        embeds: [
+          makeEmbed(
+            "Member Timed Out",
+            `**Member:** ${user.tag}\n` +
+            `**Duration:** ${minutes} minutes\n` +
+            `**Case:** #${entry.id}\n**Reason:** ${reason}`
+          ),
+        ],
       });
     }
 
-    // KICK
-    if (command === "kick") {
-      if (!interaction.memberPermissions.has(PermissionFlagsBits.KickMembers)) {
-        return replyError(interaction, "You need the Kick Members permission.");
-      }
+    if (command === "kick" || command === "ban") {
+      const permission = command === "kick"
+        ? PermissionFlagsBits.KickMembers
+        : PermissionFlagsBits.BanMembers;
 
-      const user = interaction.options.getUser("member");
-      const reason = interaction.options.getString("reason");
-
-      const member = await interaction.guild.members.fetch(user.id)
-        .catch(() => null);
-
-      if (user.id === interaction.user.id || user.id === client.user.id) {
-        return replyError(interaction, "You cannot kick yourself or the bot.");
-      }
-
-      if (!member?.kickable) {
-        return replyError(interaction, "I cannot kick that member.");
-      }
-
-      await member.kick(reason);
-
-      return interaction.reply({
-        embeds: [embed("Member Kicked", `**Member:** ${user.tag}\n**Reason:** ${reason}`)],
-        ephemeral: true,
-      });
-    }
-
-    // BAN
-    if (command === "ban") {
-      if (!interaction.memberPermissions.has(PermissionFlagsBits.BanMembers)) {
-        return replyError(interaction, "You need the Ban Members permission.");
+      if (!hasPermission(interaction, permission)) {
+        return deny(interaction, `You need the ${command === "kick" ? "Kick Members" : "Ban Members"} permission.`);
       }
 
       const user = interaction.options.getUser("member");
       const reason = interaction.options.getString("reason");
 
       if (user.id === interaction.user.id || user.id === client.user.id) {
-        return replyError(interaction, "You cannot ban yourself or the bot.");
+        return deny(interaction, `You cannot ${command} yourself or the bot.`);
       }
 
-      const member = await interaction.guild.members.fetch(user.id)
-        .catch(() => null);
+      const member = await interaction.guild.members
+        .fetch(user.id).catch(() => null);
 
-      if (member && !member.bannable) {
-        return replyError(interaction, "I cannot ban that member.");
+      if (command === "kick") {
+        if (!member?.kickable) {
+          return deny(interaction, "I cannot kick that member. Check role positions and permissions.");
+        }
+
+        await member.kick(reason);
+      } else {
+        if (member && !member.bannable) {
+          return deny(interaction, "I cannot ban that member. Check role positions and permissions.");
+        }
+
+        await interaction.guild.members.ban(user.id, { reason });
       }
 
-      await interaction.guild.members.ban(user.id, { reason });
+      const entry = recordCase(
+        interaction.guildId,
+        user.id,
+        interaction.user.id,
+        command === "kick" ? "Kick" : "Ban",
+        reason
+      );
 
-      return interaction.reply({
-        embeds: [embed("Member Banned", `**Member:** ${user.tag}\n**Reason:** ${reason}`)],
-        ephemeral: true,
+      await logModeration(interaction.guild, entry);
+
+      return privateReply(interaction, {
+        embeds: [
+          makeEmbed(
+            command === "kick" ? "Member Kicked" : "Member Banned",
+            `**Member:** ${user.tag}\n**Case:** #${entry.id}\n` +
+            `**Reason:** ${reason}`
+          ),
+        ],
       });
     }
 
-    // PURGE
     if (command === "purge") {
-      if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageMessages)) {
-        return replyError(interaction, "You need the Manage Messages permission.");
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
+        return deny(interaction, "You need Manage Messages permission.");
+      }
+
+      const channel = interaction.channel;
+      if (!channel?.messages || !channel.bulkDelete) {
+        return deny(interaction, "This command cannot be used in this channel.");
       }
 
       const amount = interaction.options.getInteger("amount");
+      const deleted = await channel.bulkDelete(amount, true);
 
-      if (!interaction.channel?.isTextBased() ||
-          !("bulkDelete" in interaction.channel)) {
-        return replyError(interaction, "This command cannot be used here.");
+      return privateReply(
+        interaction,
+        `Deleted ${deleted.size} recent messages. Messages older than 14 days cannot be bulk-deleted.`
+      );
+    }
+
+    if (command === "slowmode") {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageChannels)) {
+        return deny(interaction, "You need Manage Channels permission.");
       }
 
-      const deleted = await interaction.channel.bulkDelete(amount, true);
+      const channel =
+        interaction.options.getChannel("channel") || interaction.channel;
 
-      return interaction.reply({
-        content: `Deleted ${deleted.size} recent messages. Messages older than 14 days cannot be bulk-deleted.`,
-        ephemeral: true,
+      if (!channel?.setRateLimitPerUser) {
+        return deny(interaction, "Choose a text channel that supports slowmode.");
+      }
+
+      const seconds = interaction.options.getInteger("seconds");
+
+      await channel.setRateLimitPerUser(
+        seconds,
+        `Changed by ${interaction.user.tag}`
+      );
+
+      return privateReply(
+        interaction,
+        `Slowmode for ${channel} set to **${seconds} seconds**.`
+      );
+    }
+
+    if (command === "lock" || command === "unlock") {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageChannels)) {
+        return deny(interaction, "You need Manage Channels permission.");
+      }
+
+      const channel =
+        interaction.options.getChannel("channel") || interaction.channel;
+
+      if (!channel?.permissionOverwrites) {
+        return deny(interaction, "Choose a text channel.");
+      }
+
+      const reason =
+        interaction.options.getString("reason") ||
+        `Changed by ${interaction.user.tag}`;
+
+      await channel.permissionOverwrites.edit(
+        interaction.guild.roles.everyone,
+        {
+          SendMessages: command === "lock" ? false : null,
+          AddReactions: command === "lock" ? false : null,
+          SendMessagesInThreads: command === "lock" ? false : null,
+        },
+        { reason }
+      );
+
+      return privateReply(
+        interaction,
+        `${channel} has been ${command === "lock" ? "locked" : "unlocked"}.`
+      );
+    }
+
+    if (command === "purgeuser") {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
+        return deny(interaction, "You need Manage Messages permission.");
+      }
+
+      const channel = interaction.channel;
+      if (!channel?.messages || !channel.bulkDelete) {
+        return deny(interaction, "Use this command in a text channel.");
+      }
+
+      const user = interaction.options.getUser("member");
+      const amount = interaction.options.getInteger("amount");
+      const fetched = await channel.messages.fetch({ limit: amount });
+
+      const matching = fetched.filter(message =>
+        message.author.id === user.id &&
+        Date.now() - message.createdTimestamp < 14 * 24 * 60 * 60 * 1000
+      );
+
+      const deleted = matching.size
+        ? await channel.bulkDelete(matching, true)
+        : { size: 0 };
+
+      return privateReply(
+        interaction,
+        `Deleted **${deleted.size}** recent messages from ${user} in ${channel}.`
+      );
+    }
+
+    if (command === "case") {
+      if (!isStaff(interaction)) {
+        return deny(interaction, "You need moderation staff permissions.");
+      }
+
+      const id = String(interaction.options.getInteger("id"));
+      const entry = db.cases[id];
+
+      if (!entry || entry.guildId !== interaction.guildId) {
+        return deny(interaction, "That case was not found in this server.");
+      }
+
+      return privateReply(interaction, {
+        embeds: [
+          makeEmbed(
+            `Moderation Case #${entry.id}`,
+            `**Action:** ${entry.action}\n` +
+            `**Member:** <@${entry.targetId}>\n` +
+            `**Moderator:** <@${entry.moderatorId}>\n` +
+            `**Reason:** ${entry.reason}\n` +
+            `**Date:** <t:${Math.floor(entry.timestamp / 1000)}:F>` +
+            (entry.durationMinutes
+              ? `\n**Duration:** ${entry.durationMinutes} minutes`
+              : "")
+          ),
+        ],
       });
     }
 
-    // GAME UPDATE AND ANNOUNCEMENT
-    if (command === "gameupdate" || command === "announce") {
-      if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
-        return replyError(interaction, "You need the Manage Server permission.");
+    if (command === "announce") {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        return deny(interaction, "You need Manage Server permission.");
       }
 
+      const channel = interaction.options.getChannel("channel");
       const title = interaction.options.getString("title");
-      const message = interaction.options.getString(
-        command === "gameupdate" ? "details" : "message"
-      );
+      const message = interaction.options.getString("message");
 
-      const key = command === "gameupdate"
-        ? "updatesChannelId"
-        : "updatesChannelId";
-
-      const sent = await sendConfigured(
-        interaction.guild,
-        key,
-        embed(title, message).setFooter({
-          text: `Published by ${interaction.user.tag}`,
-        })
-      );
-
-      if (!sent) {
-        return replyError(interaction, "Configure the updates channel using /config channel first.");
+      if (
+        !channel.isTextBased() ||
+        !channel.permissionsFor(interaction.guild.members.me)
+          ?.has(PermissionFlagsBits.SendMessages)
+      ) {
+        return deny(interaction, "I cannot send messages in that channel.");
       }
-
-      return interaction.reply({
-        content: "Your post has been published.",
-        ephemeral: true,
-      });
-    }
-
-    // BUG REPORT
-    if (command === "bugreport") {
-      const details = interaction.options.getString("details");
-
-      const sent = await sendConfigured(
-        interaction.guild,
-        "reportsChannelId",
-        embed("New Bug Report", details).addFields(
-          { name: "Reported by", value: `${interaction.user.tag} (${interaction.user.id})` },
-          { name: "Status", value: "Awaiting review" }
-        )
-      );
-
-      return interaction.reply({
-        content: sent
-          ? "Your bug report has been sent to the team."
-          : "The report channel has not been configured yet.",
-        ephemeral: true,
-      });
-    }
-
-    // SUGGESTION
-    if (command === "suggest") {
-      const idea = interaction.options.getString("idea");
-
-      const sent = await sendConfigured(
-        interaction.guild,
-        "suggestionsChannelId",
-        embed("Community Suggestion", idea).addFields(
-          { name: "Suggested by", value: `${interaction.user.tag} (${interaction.user.id})` }
-        )
-      );
-
-      return interaction.reply({
-        content: sent
-          ? "Your suggestion has been submitted."
-          : "The suggestions channel has not been configured yet.",
-        ephemeral: true,
-      });
-    }
-
-    // CONFIGURATION
-    if (command === "config") {
-      if (!isAdmin(interaction)) {
-        return replyError(interaction, "Only administrators can configure the bot.");
-      }
-
-      db.config[interaction.guildId] ??= {};
-
-      const subcommand = interaction.options.getSubcommand();
-
-      if (subcommand === "channel") {
-        const key = interaction.options.getString("type");
-        const channel = interaction.options.getChannel("channel");
-
-        db.config[interaction.guildId][key] = channel.id;
-        saveData();
-
-        return interaction.reply({
-          content: `Configured ${key} as ${channel}.`,
-          ephemeral: true,
-        });
-      }
-
-      if (subcommand === "staffrole") {
-        const role = interaction.options.getRole("role");
-
-        db.config[interaction.guildId].staffRoleId = role.id;
-        saveData();
-
-        return interaction.reply({
-          content: `Support staff role set to ${role}.`,
-          ephemeral: true,
-        });
-      }
-    }
-
-    // SUPPORT TICKET CREATE
-    if (command === "support") {
-      const guild = interaction.guild;
-
-      const previousId = db.tickets[interaction.user.id];
-      if (previousId) {
-        const previous = await guild.channels.fetch(previousId)
-          .catch(() => null);
-
-        if (previous) {
-          return replyError(interaction, `You already have a ticket: ${previous}`);
-        }
-
-        delete db.tickets[interaction.user.id];
-      }
-
-      const staffRoleId = db.config[guild.id]?.staffRoleId;
-
-      const overwrites = [
-        {
-          id: guild.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: interaction.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-            PermissionFlagsBits.AttachFiles,
-          ],
-        },
-        {
-          id: client.user.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-            PermissionFlagsBits.ManageChannels,
-            PermissionFlagsBits.AttachFiles,
-          ],
-        },
-      ];
-
-      if (staffRoleId) {
-        overwrites.push({
-          id: staffRoleId,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory,
-          ],
-        });
-      }
-
-      const channel = await guild.channels.create({
-        name: `ticket-${interaction.user.id}`,
-        type: ChannelType.GuildText,
-        permissionOverwrites: overwrites,
-        topic: `Garden Adventures support ticket | Owner ID: ${interaction.user.id}`,
-      });
-
-      db.tickets[interaction.user.id] = channel.id;
-      saveData();
 
       await channel.send({
-        embeds: [embed(
-          "Garden Adventures Support",
-          `Welcome ${interaction.user}.\n\nDescribe your issue and the support team will assist you.\n\nStaff can use \`/ticketclaim\` to claim this ticket. Use \`/ticketclose\` when the issue is resolved.`
-        )],
+        embeds: [
+          makeEmbed(title, message).setFooter({
+            text: `Published by ${interaction.user.tag}`,
+          }),
+        ],
       });
 
-      return interaction.reply({
-        content: `Your private support ticket is ready: ${channel}`,
-        ephemeral: true,
-      });
+      return privateReply(interaction, `Announcement published in ${channel}.`);
     }
 
-    // CLAIM TICKET
-    if (command === "ticketclaim") {
-      if (!interaction.channel?.name.startsWith("ticket-")) {
-        return replyError(interaction, "Use this command inside a support ticket.");
+    if (command === "poll") {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        return deny(interaction, "You need Manage Server permission.");
       }
 
-      if (!isTicketStaff(interaction)) {
-        return replyError(interaction, "Only support staff can claim tickets.");
+      const channel = interaction.options.getChannel("channel");
+      const question = interaction.options.getString("question");
+      const options = interaction.options.getString("options")
+        .split("|")
+        .map(option => option.trim())
+        .filter(Boolean);
+
+      if (options.length < 2 || options.length > 10) {
+        return deny(interaction, "Provide 2–10 options separated by the | character.");
       }
 
-      const ownerId = interaction.channel.topic?.match(/Owner ID: (\d+)/)?.[1];
+      const botPermissions = channel.permissionsFor(interaction.guild.members.me);
 
-      if (!ownerId) {
-        return replyError(interaction, "The ticket owner could not be identified.");
+      if (
+        !channel.isTextBased() ||
+        !botPermissions?.has([
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.AddReactions,
+          PermissionFlagsBits.EmbedLinks,
+        ])
+      ) {
+        return deny(interaction, "I need Send Messages, Add Reactions and Embed Links permissions in that channel.");
       }
 
-      const ticket = db.tickets[ownerId];
+      const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
 
-      if (ticket !== interaction.channel.id) {
-        return replyError(interaction, "This ticket is not registered in the bot's saved data.");
-      }
+      const description = options
+        .map((option, index) => `${emojis[index]} ${option}`)
+        .join("\n");
 
-      const existingClaim = interaction.channel.topic?.match(/Claimed by: (\d+)/)?.[1];
-
-      if (existingClaim) {
-        return replyError(interaction, `This ticket is already claimed by <@${existingClaim}>.`);
-      }
-
-      await interaction.channel.setTopic(
-        `Garden Adventures support ticket | Owner ID: ${ownerId} | Claimed by: ${interaction.user.id}`
-      );
-
-      return interaction.reply({
-        embeds: [embed("Ticket Claimed", `${interaction.user} is now handling this ticket.`)],
+      const pollMessage = await channel.send({
+        embeds: [
+          makeEmbed(`📊 ${question}`, description).setFooter({
+            text: `Poll created by ${interaction.user.tag}`,
+          }),
+        ],
       });
+
+      for (let index = 0; index < options.length; index++) {
+        await pollMessage.react(emojis[index]);
+      }
+
+      return privateReply(interaction, `Poll published in ${channel}.`);
     }
 
-    // CLOSE TICKET AND SAVE TRANSCRIPT
-    if (command === "ticketclose") {
-      if (!interaction.channel?.name.startsWith("ticket-")) {
-        return replyError(interaction, "Use this command inside a support ticket.");
+    if (command === "embed") {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        return deny(interaction, "You need Manage Server permission.");
       }
 
-      const ownerId = interaction.channel.topic?.match(/Owner ID: (\d+)/)?.[1];
+      const channel = interaction.options.getChannel("channel");
+      const title = interaction.options.getString("title");
+      const description = interaction.options.getString("description");
 
-      if (!ownerId) {
-        return replyError(interaction, "Could not identify the ticket owner.");
+      const botPermissions = channel.permissionsFor(interaction.guild.members.me);
+
+      if (
+        !channel.isTextBased() ||
+        !botPermissions?.has([
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.EmbedLinks,
+        ])
+      ) {
+        return deny(interaction, "I need Send Messages and Embed Links permissions in that channel.");
       }
 
-      if (interaction.user.id !== ownerId && !isTicketStaff(interaction)) {
-        return replyError(interaction, "Only the ticket owner or support staff can close this ticket.");
+      await channel.send({
+        embeds: [
+          makeEmbed(title, description).setFooter({
+            text: `Published by ${interaction.user.tag}`,
+          }),
+        ],
+      });
+
+      return privateReply(interaction, `Embed published in ${channel}.`);
+    }
+
+    if (command === "notificationroles") {
+      if (!canManageRoles(interaction.member)) {
+        return deny(interaction, "You need Manage Roles or Manage Server permission.");
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      const channel = interaction.options.getChannel("channel");
+      const botPermissions = channel.permissionsFor(interaction.guild.members.me);
 
-      const messages = [];
-      let lastId;
-
-      for (let page = 0; page < 10; page++) {
-        const batch = await interaction.channel.messages.fetch({
-          limit: 100,
-          ...(lastId ? { before: lastId } : {}),
-        });
-
-        if (!batch.size) break;
-
-        messages.push(...batch.values());
-        lastId = batch.last().id;
-
-        if (batch.size < 100) break;
-      }
-
-      messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-
-      const transcript = messages.map(message => {
-        const time = new Date(message.createdTimestamp).toISOString();
-        const content = message.content || "[No text content]";
-        const attachments = [...message.attachments.values()]
-          .map(a => a.url)
-          .join(" ");
-
-        return `[${time}] ${message.author.tag}: ${content} ${attachments}`.trim();
-      }).join("\n");
-
-      const file = new AttachmentBuilder(
-        Buffer.from(transcript || "No messages recorded.", "utf8"),
-        { name: `transcript-${interaction.channel.id}.txt` }
-      );
-
-      await sendConfigured(
-        interaction.guild,
-        "logsChannelId",
-        embed(
-          "Support Ticket Closed",
-          `**Channel:** ${interaction.channel.name}\n**Closed by:** ${interaction.user.tag}\n**Owner ID:** ${ownerId}`
+      if (
+        !channel.isTextBased() ||
+        !botPermissions?.has([
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.EmbedLinks,
+          PermissionFlagsBits.AddReactions,
+        ]) ||
+        !interaction.guild.members.me.permissions.has(
+          PermissionFlagsBits.ManageRoles
         )
-      ).catch(() => null);
-
-      const logChannelId = db.config[interaction.guildId]?.logsChannelId;
-
-      if (logChannelId) {
-        const logChannel = await interaction.guild.channels.fetch(logChannelId)
-          .catch(() => null);
-
-        if (logChannel?.isTextBased()) {
-          await logChannel.send({
-            embeds: [embed("Ticket Transcript", `Transcript for ${interaction.channel.name}`)],
-            files: [file],
-          }).catch(console.error);
-        }
+      ) {
+        return deny(interaction, "I need Send Messages, Embed Links, Add Reactions and Manage Roles permissions.");
       }
 
-      delete db.tickets[ownerId];
-      saveData();
+      const roleEntries = [];
 
-      await interaction.editReply("Ticket closed. Transcript saved where a log channel is configured.");
+      for (const choice of ROLE_CHOICES) {
+        let role = interaction.guild.roles.cache.find(
+          existing => existing.name === choice.name
+        );
 
-      setTimeout(() => {
-        interaction.channel.delete("Garden Adventures ticket closed")
-          .catch(console.error);
-      }, 3000);
-    }
-
-    // EVENTS
-    if (command === "event") {
-      const action = interaction.options.getSubcommand();
-
-      if (action === "create") {
-        if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageEvents) &&
-            !interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
-          return replyError(interaction, "You need Manage Events or Manage Server permission.");
+        if (!role) {
+          role = await interaction.guild.roles.create({
+            name: choice.name,
+            color: GREEN,
+            mentionable: false,
+            reason: "Garden Adventures notification role setup",
+          });
         }
 
-        const id = Date.now().toString(36);
-        const name = interaction.options.getString("name");
-        const time = interaction.options.getString("time");
-        const details = interaction.options.getString("details");
+        if (
+          role.position >=
+          interaction.guild.members.me.roles.highest.position
+        ) {
+          return deny(
+            interaction,
+            `Move my bot role above **${role.name}** in Server Settings → Roles, then run this command again.`
+          );
+        }
 
-        db.events[id] = {
-          name,
-          time,
-          details,
-          creator: interaction.user.id,
-          guildId: interaction.guildId,
-          attendees: [],
-        };
-
-        saveData();
-
-        return interaction.reply({
-          embeds: [embed(
-            `Event Created: ${name}`,
-            `**ID:** \`${id}\`\n**When:** ${time}\n**Details:** ${details}\n\nUse \`/event join id:${id}\` to join.`
-          )],
+        roleEntries.push({
+          emoji: choice.emoji,
+          roleId: role.id,
+          name: choice.name,
         });
       }
 
-      if (action === "list") {
-        const events = Object.entries(db.events)
-          .filter(([, event]) => event.guildId === interaction.guildId);
+      const description = roleEntries
+        .map(role => `${role.emoji} — **${role.name}**`)
+        .join("\n");
 
-        const description = events.length
-          ? events.map(([id, event]) =>
-            `**${event.name}**\nID: \`${id}\`\nWhen: ${event.time}\n${event.details}\nParticipants: ${event.attendees.length}`
-          ).join("\n\n")
-          : "No events have been created yet.";
-
-        return interaction.reply({
-          embeds: [embed("Garden Adventures Events", description)],
-          ephemeral: true,
-        });
-      }
-
-      if (action === "join") {
-        const id = interaction.options.getString("id");
-        const event = db.events[id];
-
-        if (!event || event.guildId !== interaction.guildId) {
-          return replyError(interaction, "That event was not found.");
-        }
-
-        if (!event.attendees.includes(interaction.user.id)) {
-          event.attendees.push(interaction.user.id);
-          saveData();
-        }
-
-        return interaction.reply({
-          content: `You have registered for **${event.name}**.`,
-          ephemeral: true,
-        });
-      }
-
-      if (action === "cancel") {
-        if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageEvents) &&
-            !interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
-          return replyError(interaction, "You need permission to cancel events.");
-        }
-
-        const id = interaction.options.getString("id");
-        const event = db.events[id];
-
-        if (!event || event.guildId !== interaction.guildId) {
-          return replyError(interaction, "That event was not found.");
-        }
-
-        delete db.events[id];
-        saveData();
-
-        return interaction.reply({
-          content: `Event **${event.name}** has been cancelled.`,
-        });
-      }
-    }
-
-    // BALANCE
-    if (command === "balance") {
-      const user = getProfile(interaction.user.id);
-      saveData();
-
-      return interaction.reply({
-        embeds: [embed("Garden Wallet", `**Coins:** ${user.coins.toLocaleString()}`)],
-        ephemeral: true,
+      const panelMessage = await channel.send({
+        embeds: [
+          makeEmbed(
+            "Garden Adventures Notification Roles",
+            "React below to get or remove notification roles.\n\n" +
+            `${description}\n\nYou can select as many as you like.`
+          ),
+        ],
       });
-    }
 
-    // DAILY REWARD
-    if (command === "daily") {
-      const user = getProfile(interaction.user.id);
-      const now = Date.now();
-      const cooldown = 24 * 60 * 60 * 1000;
-      const remaining = cooldown - (now - user.daily);
-
-      if (remaining > 0) {
-        const hours = Math.floor(remaining / 3600000);
-        const minutes = Math.floor((remaining % 3600000) / 60000);
-
-        return replyError(interaction, `You can claim again in ${hours}h ${minutes}m.`);
+      for (const role of roleEntries) {
+        await panelMessage.react(role.emoji);
       }
 
-      user.coins += 100;
-      user.daily = now;
-      saveData();
-
-      return interaction.reply({
-        embeds: [embed("Daily Garden Reward", `You received **100 coins**.\nNew balance: **${user.coins} coins**.`)],
-        ephemeral: true,
-      });
-    }
-
-    // SHOP
-    if (command === "shop") {
-      const description = Object.entries(SEEDS).map(([name, crop]) =>
-        `**${name.charAt(0).toUpperCase() + name.slice(1)}**\nPrice: ${crop.price} coins | Sale value: ${crop.reward} coins | Grow time: ${crop.growSeconds} seconds`
-      ).join("\n\n");
-
-      return interaction.reply({
-        embeds: [embed("Garden Seed Shop", description)],
-        ephemeral: true,
-      });
-    }
-
-    // BUY SEEDS
-    if (command === "buy") {
-      const user = getProfile(interaction.user.id);
-      const seed = interaction.options.getString("seed");
-      const amount = interaction.options.getInteger("amount");
-      const cost = SEEDS[seed].price * amount;
-
-      if (user.coins < cost) {
-        return replyError(interaction, `You need ${cost} coins but only have ${user.coins}.`);
-      }
-
-      user.coins -= cost;
-      user.seeds[seed] = (user.seeds[seed] || 0) + amount;
-      saveData();
-
-      return interaction.reply({
-        embeds: [embed("Seeds Purchased", `You bought **${amount} ${seed} seed(s)** for ${cost} coins.\nRemaining balance: ${user.coins} coins.`)],
-        ephemeral: true,
-      });
-    }
-
-    // GARDEN
-    if (command === "garden") {
-      const user = getProfile(interaction.user.id);
-      const action = interaction.options.getSubcommand();
-
-      if (action === "view") {
-        const plots = user.garden.length
-          ? user.garden.map((crop, i) => {
-            const ready = Date.now() >= crop.readyAt;
-            return `**Plot ${i + 1}: ${crop.seed}** — ${ready ? "Ready to harvest" : `Ready <t:${Math.floor(crop.readyAt / 1000)}:R>`}`;
-          }).join("\n")
-          : "Your garden is empty. Buy seeds and plant your first crop.";
-
-        const seeds = Object.entries(user.seeds)
-          .filter(([, amount]) => amount > 0)
-          .map(([name, amount]) => `${name}: ${amount}`)
-          .join("\n") || "No seeds";
-
-        return interaction.reply({
-          embeds: [embed(
-            "Your Garden",
-            `${plots}\n\n**Seed Inventory**\n${seeds}\n\n**Coins:** ${user.coins}`
-          )],
-          ephemeral: true,
-        });
-      }
-
-      if (action === "plant") {
-        const seed = interaction.options.getString("seed");
-
-        if (!user.seeds[seed] || user.seeds[seed] < 1) {
-          return replyError(interaction, `You do not have any ${seed} seeds. Use /buy first.`);
-        }
-
-        if (user.garden.length >= 10) {
-          return replyError(interaction, "Your garden is full. Harvest a crop first.");
-        }
-
-        user.seeds[seed]--;
-        user.garden.push({
-          seed,
-          readyAt: Date.now() + SEEDS[seed].growSeconds * 1000,
-        });
-
-        saveData();
-
-        return interaction.reply({
-          embeds: [embed(
-            "Seed Planted",
-            `You planted a **${seed}** seed.\nIt will be ready <t:${Math.floor((Date.now() + SEEDS[seed].growSeconds * 1000) / 1000)}:R>.`
-          )],
-          ephemeral: true,
-        });
-      }
-
-      if (action === "harvest") {
-        const plot = interaction.options.getInteger("plot") - 1;
-        const crop = user.garden[plot];
-
-        if (!crop) {
-          return replyError(interaction, "That plot is empty.");
-        }
-
-        if (Date.now() < crop.readyAt) {
-          return replyError(interaction, `Your crop will be ready <t:${Math.floor(crop.readyAt / 1000)}:R>.`);
-        }
-
-        user.garden.splice(plot, 1);
-        user.inventory ??= {};
-        user.inventory[crop.seed] = (user.inventory[crop.seed] || 0) + 1;
-
-        saveData();
-
-        return interaction.reply({
-          embeds: [embed(
-            "Crop Harvested",
-            `You harvested **1 ${crop.seed}**.\nUse \`/sell crop:${crop.seed} amount:1\` to sell it.`
-          )],
-          ephemeral: true,
-        });
-      }
-    }
-
-    // SELL HARVESTED CROPS
-    if (command === "sell") {
-      const user = getProfile(interaction.user.id);
-      const crop = interaction.options.getString("crop");
-      const amount = interaction.options.getInteger("amount");
-
-      user.inventory ??= {};
-
-      if ((user.inventory[crop] || 0) < amount) {
-        return replyError(interaction, `You do not have ${amount} harvested ${crop}(s).`);
-      }
-
-      const earnings = SEEDS[crop].reward * amount;
-
-      user.inventory[crop] -= amount;
-      user.coins += earnings;
+      db.notificationPanels[panelMessage.id] = {
+        guildId: interaction.guildId,
+        channelId: channel.id,
+        roles: roleEntries,
+      };
 
       saveData();
 
-      return interaction.reply({
-        embeds: [embed(
-          "Crops Sold",
-          `You sold **${amount} ${crop}(s)** for **${earnings} coins**.\nNew balance: **${user.coins} coins**.`
-        )],
-        ephemeral: true,
+      return privateReply(
+        interaction,
+        `Notification-role panel published in ${channel}.`
+      );
+    }
+
+    if (command === "health") {
+      let storage = "OK";
+
+      try {
+        fs.accessSync(DATA_FILE, fs.constants.R_OK | fs.constants.W_OK);
+        JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+      } catch {
+        storage = "Error";
+      }
+
+      return privateReply(interaction, {
+        embeds: [
+          makeEmbed(
+            "Bot Health",
+            `**Status:** Online\n` +
+            `**WebSocket latency:** ${Math.round(client.ws.ping)} ms\n` +
+            `**Storage:** ${storage}\n` +
+            `**Uptime:** ${Math.floor(process.uptime() / 60)} minutes`
+          ),
+        ],
       });
     }
 
-    // PET COLLECTION
-    if (command === "pets") {
-      const user = getProfile(interaction.user.id);
-
-      const description = user.pets.length
-        ? user.pets.map((pet, i) =>
-          `**${i + 1}. ${pet.name}** — ${pet.rarity}`
-        ).join("\n")
-        : "You have no pets yet. Use `/egg buy` to buy an egg.";
-
-      return interaction.reply({
-        embeds: [embed("Your Pet Collection", description)],
-        ephemeral: true,
-      });
-    }
-
-    // EGGS
-    if (command === "egg") {
-      const user = getProfile(interaction.user.id);
-      const action = interaction.options.getSubcommand();
-
-      if (action === "buy") {
-        const amount = interaction.options.getInteger("amount");
-        const cost = amount * 100;
-
-        if (user.coins < cost) {
-          return replyError(interaction, `You need ${cost} coins to buy ${amount} egg(s).`);
-        }
-
-        user.coins -= cost;
-        user.eggs = (user.eggs || 0) + amount;
-
-        saveData();
-
-        return interaction.reply({
-          embeds: [embed(
-            "Pet Eggs Purchased",
-            `You bought **${amount} egg(s)** for ${cost} coins.\nUse \`/egg hatch\` to hatch one.`
-          )],
-          ephemeral: true,
-        });
+    if (command === "maintenance") {
+      if (!isAdmin(interaction)) {
+        return deny(interaction, "Only server administrators can change maintenance mode.");
       }
 
-      if (action === "hatch") {
-        if (!user.eggs || user.eggs < 1) {
-          return replyError(interaction, "You have no eggs. Use /egg buy first.");
-        }
+      const enabled = interaction.options.getBoolean("enabled");
+      const reason =
+        interaction.options.getString("reason") || "No reason provided";
 
-        user.eggs--;
-        const pet = choosePet();
+      db.maintenance[interaction.guildId] = {
+        enabled,
+        reason,
+        changedBy: interaction.user.id,
+        changedAt: Date.now(),
+      };
 
-        user.pets.push({
-          name: pet.name,
-          rarity: pet.rarity,
-          obtainedAt: Date.now(),
-        });
+      saveData();
 
-        saveData();
-
-        return interaction.reply({
-          embeds: [embed(
-            "Egg Hatched",
-            `Your egg hatched into a **${pet.name}**!\n**Rarity:** ${pet.rarity}\n**Eggs remaining:** ${user.eggs}`
-          ).setColor(pet.rarity === "Legendary" ? GOLD : GREEN)],
-        });
-      }
+      return privateReply(
+        interaction,
+        enabled
+          ? `Maintenance mode enabled. Reason: ${reason}`
+          : "Maintenance mode disabled. Normal command access has resumed."
+      );
     }
 
-    // LEADERBOARD
-    if (command === "leaderboard") {
-      const entries = Object.entries(db.users)
-        .sort((a, b) => b[1].coins - a[1].coins)
-        .slice(0, 10);
-
-      if (!entries.length) {
-        return interaction.reply({
-          embeds: [embed("Garden Leaderboard", "No gardeners have earned coins yet.")],
-        });
-      }
-
-      const lines = await Promise.all(entries.map(async ([id, data], index) => {
-        const user = await client.users.fetch(id).catch(() => null);
-        return `**${index + 1}.** ${user?.username || "Unknown gardener"} — ${data.coins.toLocaleString()} coins`;
-      }));
-
-      return interaction.reply({
-        embeds: [embed("Richest Gardeners", lines.join("\n"))],
-      });
-    }
-
+    return deny(interaction, "That command is not implemented.");
   } catch (error) {
     console.error(`Error in /${command}:`, error);
-    await replyError(
+
+    await privateReply(
       interaction,
-      "Something went wrong. Check the bot console or contact an administrator."
+      "Something went wrong while running this command. Check the bot console or contact an administrator."
     ).catch(() => null);
   }
 });
-
-// ======================================================
-// ERROR HANDLING AND STARTUP
-// ======================================================
 
 client.on("error", error => {
   console.error("Discord client error:", error);
