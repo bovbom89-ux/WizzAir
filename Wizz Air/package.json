@@ -1,16 +1,13 @@
 {
-"name": "wizz-air-support",
-"version": "1.0.0",
-"description": "Wizz Air Virtual Discord support and flight management bot",
-"main": "index.js",
-"scripts": {
-"start": "node index.js"
-},
-"engines": {
-"node": ">=20.0.0"
-},
-"dependencies": {
-"discord.js": "^14.25.1",
-"dotenv": "^16.4.7"
-}
+  "name": "garden-adventures-bot",
+  "version": "1.0.0",
+  "description": "Garden Adventures Discord Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.7"
+  }
 }
