@@ -1,8 +1,8 @@
-
 require("dotenv").config();
 
 const fs = require("node:fs");
 const path = require("node:path");
+
 const {
   Client,
   GatewayIntentBits,
@@ -11,22 +11,16 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
-  ChannelType,
-  EmbedBuilder,
   MessageFlags,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ChannelSelectMenuBuilder,
+  ChannelType,
 } = require("discord.js");
 
-const TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID || "";
-
-const GREEN = 0x2E8B57;
-const MAX_REASON = 900;
-
-if (!TOKEN || !CLIENT_ID) {
-  console.error("Missing DISCORD_TOKEN or CLIENT_ID in .env");
-  process.exit(1);
-}
+// ============================================================
+// GARDEN ADVENTURES BOT
+// ============================================================
 
 const client = new Client({
   intents: [
@@ -43,14 +37,26 @@ const client = new Client({
   ],
 });
 
+const GREEN = 0x2e8b57;
+const RED = 0xe74c3c;
+const ORANGE = 0xf39c12;
+const MAX_REASON = 900;
+
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "garden-data.json");
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
+  console.error("Missing DISCORD_TOKEN or CLIENT_ID in .env");
+  process.exit(1);
+}
 
-const DEFAULT_DATA = {
+// ============================================================
+// DATA STORAGE
+// ============================================================
+
+let db = {
   warnings: {},
-  cases: {},
+  cases: [],
   nextCaseId: 1,
   notificationPanels: {},
   maintenance: {},
@@ -58,666 +64,826 @@ const DEFAULT_DATA = {
 
 function loadData() {
   try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+
     if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify(DEFAULT_DATA, null, 2)
-      );
+      saveData();
+      return;
     }
 
-    const old = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    const saved = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
 
-    return {
-      ...structuredClone(DEFAULT_DATA),
-      warnings: old.warnings || {},
-      cases: old.cases || {},
-      nextCaseId: Number(old.nextCaseId) || 1,
-      notificationPanels: old.notificationPanels || {},
-      maintenance: old.maintenance || {},
+    // Preserve unrelated legacy data rather than deleting it.
+    db = {
+      ...saved,
+      warnings: saved.warnings || {},
+      cases: Array.isArray(saved.cases) ? saved.cases : [],
+      nextCaseId: Number(saved.nextCaseId) || 1,
+      notificationPanels: saved.notificationPanels || {},
+      maintenance: saved.maintenance || {},
     };
   } catch (error) {
     console.error("Could not load data:", error);
-    return structuredClone(DEFAULT_DATA);
   }
 }
 
-let db = loadData();
-
 function saveData() {
-  const temporary = `${DATA_FILE}.tmp`;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
 
-  fs.writeFileSync(
-    temporary,
-    JSON.stringify(db, null, 2)
-  );
-
-  fs.renameSync(temporary, DATA_FILE);
+    const temporaryFile = DATA_FILE + ".tmp";
+    fs.writeFileSync(temporaryFile, JSON.stringify(db, null, 2));
+    fs.renameSync(temporaryFile, DATA_FILE);
+  } catch (error) {
+    console.error("Could not save data:", error);
+  }
 }
 
-function makeEmbed(title, description) {
+loadData();
+
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
+
+function privateReply(interaction, options) {
+  const payload =
+    typeof options === "string"
+      ? { content: options }
+      : { ...options };
+
+  payload.flags = (payload.flags || 0) | MessageFlags.Ephemeral;
+
+  if (interaction.deferred || interaction.replied) {
+    return interaction.followUp(payload);
+  }
+
+  return interaction.reply(payload);
+}
+
+function makeEmbed(title, description, color = GREEN) {
   return new EmbedBuilder()
-    .setColor(GREEN)
-    .setTitle(String(title).slice(0, 256))
-    .setDescription(String(description).slice(0, 4000))
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description || "No details provided.")
     .setTimestamp();
 }
 
-async function privateReply(interaction, payload) {
-  const options =
-    typeof payload === "string"
-      ? { content: payload }
-      : { ...payload };
-
-  options.flags = MessageFlags.Ephemeral;
-  delete options.ephemeral;
-
-  if (interaction.deferred) {
-    return interaction.editReply(options);
-  }
-
-  if (interaction.replied) {
-    return interaction.followUp(options);
-  }
-
-  return interaction.reply(options);
+function truncate(value, limit = 1024) {
+  const text = String(value ?? "");
+  return text.length > limit
+    ? text.slice(0, limit - 3) + "..."
+    : text;
 }
 
-async function deny(interaction, message) {
-  return privateReply(interaction, message);
-}
-
-function hasPermission(interaction, permission) {
-  return Boolean(
-    interaction.memberPermissions?.has(permission)
-  );
+function safeReason(reason) {
+  return truncate(reason || "No reason provided.", MAX_REASON);
 }
 
 function isStaff(interaction) {
-  return Boolean(
-    interaction.memberPermissions?.has(
-      PermissionFlagsBits.ModerateMembers
-    ) ||
-    interaction.memberPermissions?.has(
-      PermissionFlagsBits.ManageGuild
-    ) ||
-    interaction.memberPermissions?.has(
-      PermissionFlagsBits.Administrator
-    )
+  return interaction.memberPermissions?.has(
+    PermissionFlagsBits.ManageGuild
+  ) || interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
   );
 }
 
 function isAdmin(interaction) {
-  return Boolean(
-    interaction.memberPermissions?.has(
-      PermissionFlagsBits.Administrator
-    )
+  return interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
   );
 }
 
-function recordCase(
-  guildId,
-  targetId,
-  moderatorId,
-  action,
-  reason,
-  extra = {}
-) {
-  const id = String(db.nextCaseId++);
+function staffOnly(interaction) {
+  if (isStaff(interaction)) return true;
 
+  privateReply(interaction, {
+    embeds: [
+      makeEmbed(
+        "Permission denied",
+        "You need the **Manage Server** permission to use this command.",
+        RED
+      ),
+    ],
+  });
+
+  return false;
+}
+
+function adminOnly(interaction) {
+  if (isAdmin(interaction)) return true;
+
+  privateReply(interaction, {
+    embeds: [
+      makeEmbed(
+        "Permission denied",
+        "You need the **Administrator** permission to use this command.",
+        RED
+      ),
+    ],
+  });
+
+  return false;
+}
+
+function getBotMember(guild) {
+  return guild.members.me;
+}
+
+function canBot(guild, permissions) {
+  const me = getBotMember(guild);
+  return Boolean(me?.permissions.has(permissions));
+}
+
+function saveCase(guild, type, targetId, moderatorId, reason) {
   const entry = {
-    id,
-    guildId,
+    id: db.nextCaseId++,
+    guildId: guild.id,
+    type,
     targetId,
     moderatorId,
-    action,
-    reason: String(reason || "No reason provided")
-      .slice(0, MAX_REASON),
-    timestamp: Date.now(),
-    ...extra,
+    reason: safeReason(reason),
+    timestamp: new Date().toISOString(),
   };
 
-  db.cases[id] = entry;
+  db.cases.push(entry);
   saveData();
 
   return entry;
 }
 
-async function logModeration(guild, entry) {
-  const channel = guild.systemChannel;
-
-  if (
-    !channel?.isTextBased() ||
-    !channel.permissionsFor(guild.members.me)
-      ?.has(PermissionFlagsBits.SendMessages)
-  ) {
-    return;
-  }
-
-  await channel.send({
-    embeds: [
-      makeEmbed(
-        `Moderation Case #${entry.id}`,
-        `**Action:** ${entry.action}\n` +
-        `**Member:** <@${entry.targetId}>\n` +
-        `**Moderator:** <@${entry.moderatorId}>\n` +
-        `**Reason:** ${entry.reason}`
-      ),
-    ],
-  }).catch(() => null);
-}
-
-function canManageRoles(member) {
-  return Boolean(
-    member?.permissions?.has(
-      PermissionFlagsBits.ManageRoles
-    ) ||
-    member?.permissions?.has(
-      PermissionFlagsBits.ManageGuild
-    ) ||
-    member?.permissions?.has(
-      PermissionFlagsBits.Administrator
-    )
-  );
-}
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName("help")
-    .setDescription("View Garden Adventures bot commands"),
-
-  new SlashCommandBuilder()
-    .setName("serverinfo")
-    .setDescription("View server information"),
-
-  new SlashCommandBuilder()
-    .setName("membercount")
-    .setDescription("View the server member count"),
-
-  new SlashCommandBuilder()
-    .setName("memberinfo")
-    .setDescription("View information about a member")
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to inspect")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("profile")
-    .setDescription("View a member's server profile")
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to inspect")
-        .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("warn")
-    .setDescription("Warn a member")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers
-    )
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to warn")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-        .setDescription("Reason")
-        .setMaxLength(900)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("warnings")
-    .setDescription("View a member's warnings")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers
-    )
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to inspect")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("timeout")
-    .setDescription("Timeout a member")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers
-    )
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to timeout")
-        .setRequired(true)
-    )
-    .addIntegerOption(o =>
-      o.setName("minutes")
-        .setDescription("Duration in minutes")
-        .setMinValue(1)
-        .setMaxValue(40320)
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-        .setDescription("Reason")
-        .setMaxLength(900)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("kick")
-    .setDescription("Kick a member")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.KickMembers
-    )
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to kick")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-        .setDescription("Reason")
-        .setMaxLength(900)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("ban")
-    .setDescription("Ban a member")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.BanMembers
-    )
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member to ban")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-        .setDescription("Reason")
-        .setMaxLength(900)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("purge")
-    .setDescription("Delete recent messages")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageMessages
-    )
-    .addIntegerOption(o =>
-      o.setName("amount")
-        .setDescription("Number of messages to delete")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("slowmode")
-    .setDescription("Set a channel's slowmode")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageChannels
-    )
-    .addIntegerOption(o =>
-      o.setName("seconds")
-        .setDescription("Seconds; 0 disables slowmode")
-        .setMinValue(0)
-        .setMaxValue(21600)
-        .setRequired(true)
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel; defaults to this channel")
-        .addChannelTypes(ChannelType.GuildText)
-        .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("lock")
-    .setDescription("Lock a text channel")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageChannels
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel; defaults to this channel")
-        .addChannelTypes(
-          ChannelType.GuildText,
-          ChannelType.GuildAnnouncement
-        )
-        .setRequired(false)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-        .setDescription("Reason for locking")
-        .setMaxLength(500)
-        .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("unlock")
-    .setDescription("Unlock a text channel")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageChannels
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel; defaults to this channel")
-        .addChannelTypes(
-          ChannelType.GuildText,
-          ChannelType.GuildAnnouncement
-        )
-        .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("purgeuser")
-    .setDescription("Delete a member's recent messages")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageMessages
-    )
-    .addUserOption(o =>
-      o.setName("member")
-        .setDescription("Member whose messages to delete")
-        .setRequired(true)
-    )
-    .addIntegerOption(o =>
-      o.setName("amount")
-        .setDescription("Messages to scan")
-        .setMinValue(1)
-        .setMaxValue(100)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("case")
-    .setDescription("View a moderation case")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers
-    )
-    .addIntegerOption(o =>
-      o.setName("id")
-        .setDescription("Case ID")
-        .setMinValue(1)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("announce")
-    .setDescription("Publish a public announcement")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel to publish in")
-        .addChannelTypes(
-          ChannelType.GuildText,
-          ChannelType.GuildAnnouncement
-        )
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("title")
-        .setDescription("Announcement title")
-        .setMaxLength(256)
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("message")
-        .setDescription("Announcement text")
-        .setMaxLength(4000)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("poll")
-    .setDescription("Publish a public reaction poll")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel to publish in")
-        .addChannelTypes(
-          ChannelType.GuildText,
-          ChannelType.GuildAnnouncement
-        )
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("question")
-        .setDescription("Poll question")
-        .setMaxLength(200)
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("options")
-        .setDescription("2–10 options separated by |")
-        .setMaxLength(800)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("embed")
-    .setDescription("Publish a custom public embed")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel to publish in")
-        .addChannelTypes(
-          ChannelType.GuildText,
-          ChannelType.GuildAnnouncement
-        )
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("title")
-        .setDescription("Embed title")
-        .setMaxLength(256)
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("description")
-        .setDescription("Embed description")
-        .setMaxLength(4000)
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("notificationroles")
-    .setDescription("Create a reaction-role panel (staff only)")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageRoles
-    )
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel for the public role panel")
-        .addChannelTypes(
-          ChannelType.GuildText,
-          ChannelType.GuildAnnouncement
-        )
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("health")
-    .setDescription("Check bot health and storage status"),
-
-  new SlashCommandBuilder()
-    .setName("maintenance")
-    .setDescription("Enable or disable maintenance mode")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.Administrator
-    )
-    .addBooleanOption(o =>
-      o.setName("enabled")
-        .setDescription("Enable maintenance mode?")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-        .setDescription("Optional maintenance reason")
-        .setMaxLength(500)
-        .setRequired(false)
-    ),
-].map(command => command.toJSON());
-
-async function registerCommands() {
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-
-  const route = GUILD_ID
-    ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID)
-    : Routes.applicationCommands(CLIENT_ID);
-
-  await rest.put(route, { body: commands });
-
-  console.log("Slash commands registered.");
-}
-
-client.once("ready", () => {
-  console.log(`${client.user.tag} is online.`);
-  client.user.setActivity("Garden Adventures");
-});
-
-// ---------------- Security protections ----------------
-
-const messageTimes = new Map();
-const recentMessages = new Map();
-const recentJoins = new Map();
-const raidModeUntil = new Map();
-
-function isStaffMember(member) {
-  return Boolean(
-    member?.permissions?.has(PermissionFlagsBits.ManageGuild) ||
-    member?.permissions?.has(PermissionFlagsBits.ManageMessages) ||
-    member?.permissions?.has(PermissionFlagsBits.Administrator) ||
-    member?.permissions?.has(PermissionFlagsBits.ModerateMembers)
-  );
-}
-
-async function sendSecurityAlert(guild, title, description) {
-  const channel = guild.systemChannel;
-
-  if (!channel?.isTextBased()) {
-    console.warn(`[${guild.name}] ${title}: ${description}`);
-    return;
-  }
-
-  if (!channel.permissionsFor(guild.members.me)
-    ?.has(PermissionFlagsBits.SendMessages)) return;
-
-  await channel.send({
-    embeds: [makeEmbed(title, description)],
-  }).catch(() => null);
-}
-
-client.on("guildMemberAdd", async member => {
-  const now = Date.now();
-  const times = (recentJoins.get(member.guild.id) || [])
-    .filter(time => now - time < 10000);
-
-  times.push(now);
-  recentJoins.set(member.guild.id, times);
-
-  if (times.length >= 6 &&
-      now > (raidModeUntil.get(member.guild.id) || 0)) {
-    raidModeUntil.set(member.guild.id, now + 60000);
-
-    await sendSecurityAlert(
-      member.guild,
-      "Possible Join Raid Detected",
-      `${times.length} members joined within 10 seconds. ` +
-      "Raid monitoring is active for 60 seconds. No automatic bans are applied."
-    );
-  }
-});
-
-client.on("messageCreate", async message => {
+async function logModeration(guild, title, description, color = ORANGE) {
   try {
-    if (!message.guild || message.author.bot || !message.member) return;
+    const channel = guild.systemChannel;
+    if (!channel || !channel.isTextBased()) return;
 
-    const staff = isStaffMember(message.member);
-    const content = message.content || "";
-
-    const invitePattern =
-      /(?:https?:\/\/)?(?:www\.)?(?:discord\.gg\/|discord(?:app)?\.com\/invite\/)[\w-]+/i;
-
-    if (!staff && invitePattern.test(content)) {
-      await message.delete().catch(() => null);
-
-      const warning = await message.channel.send({
-        content: `${message.author}, Discord invite links are not allowed here.`,
-      }).catch(() => null);
-
-      if (warning) {
-        setTimeout(() => warning.delete().catch(() => null), 5000);
-      }
+    const me = getBotMember(guild);
+    if (
+      !me ||
+      !channel.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)
+    ) {
       return;
     }
 
-    if (staff) return;
+    await channel.send({
+      embeds: [makeEmbed(title, description, color)],
+    });
+  } catch (error) {
+    console.error("Moderation logging failed:", error);
+  }
+}
 
-    const now = Date.now();
-    const key = `${message.guild.id}:${message.author.id}`;
+async function sendSecurityAlert(guild, title, description) {
+  try {
+    const channel = guild.systemChannel;
+    if (!channel || !channel.isTextBased()) return;
 
-    const times = (messageTimes.get(key) || [])
-      .filter(time => now - time < 7000);
+    const me = getBotMember(guild);
+    if (
+      !me ||
+      !channel.permissionsFor(me)?.has(PermissionFlagsBits.SendMessages)
+    ) {
+      return;
+    }
 
-    times.push(now);
-    messageTimes.set(key, times);
+    await channel.send({
+      embeds: [makeEmbed(title, description, RED)],
+    });
+  } catch (error) {
+    console.error("Security alert failed:", error);
+  }
+}
 
-    const recent = (recentMessages.get(key) || [])
-      .filter(item => now - item.time < 15000);
+function getGuildCases(guildId) {
+  return db.cases.filter((entry) => entry.guildId === guildId);
+}
 
-    const normalized = content.trim().toLowerCase();
+function makeCommand(name, description) {
+  return new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description);
+}
 
-    const duplicates = normalized
-      ? recent.filter(item => item.content === normalized).length
-      : 0;
+// ============================================================
+// SLASH COMMANDS
+// ============================================================
 
-    recent.push({ time: now, content: normalized });
-    recentMessages.set(key, recent);
+const commands = [];
 
-    const raidActive = now < (raidModeUntil.get(message.guild.id) || 0);
-    const threshold = raidActive ? 4 : 6;
+// Help
+commands.push(
+  makeCommand("help", "Show the bot's commands")
+);
 
-    if (times.length >= threshold ||
-        (normalized.length >= 5 && duplicates >= 3)) {
-      await message.delete().catch(() => null);
+// Server information
+commands.push(
+  makeCommand("serverinfo", "View server information")
+);
 
-      const member = await message.guild.members
-        .fetch(message.author.id).catch(() => null);
+// Member count
+commands.push(
+  makeCommand("membercount", "View the server member count")
+);
 
-      if (member?.moderatable) {
-        await member.timeout(
-          60000,
-          "Automatic anti-spam protection"
-        ).catch(() => null);
-      }
+// Member information
+commands.push(
+  makeCommand("memberinfo", "View information about a member")
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to inspect")
+        .setRequired(true)
+    )
+);
 
-      await sendSecurityAlert(
-        message.guild,
-        "Anti-Spam Action",
-        `Anti-spam protection triggered for <@${message.author.id}> ` +
-        `in <#${message.channel.id}>.`
+// Profile
+commands.push(
+  makeCommand("profile", "View a member's Discord profile")
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to inspect; defaults to you")
+        .setRequired(false)
+    )
+);
+
+// Warn
+commands.push(
+  makeCommand("warn", "Warn a member")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to warn")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("reason")
+        .setDescription("Reason for the warning")
+        .setRequired(true)
+    )
+);
+
+// Warnings
+commands.push(
+  makeCommand("warnings", "View a member's warnings")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to inspect")
+        .setRequired(true)
+    )
+);
+
+// Timeout
+commands.push(
+  makeCommand("timeout", "Timeout a member")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to timeout")
+        .setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("minutes")
+        .setDescription("Timeout duration in minutes")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(40320)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("reason")
+        .setDescription("Reason for the timeout")
+        .setRequired(false)
+    )
+);
+
+// Kick
+commands.push(
+  makeCommand("kick", "Kick a member")
+    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to kick")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("reason")
+        .setDescription("Reason for the kick")
+        .setRequired(false)
+    )
+);
+
+// Ban
+commands.push(
+  makeCommand("ban", "Ban a member")
+    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member to ban")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("reason")
+        .setDescription("Reason for the ban")
+        .setRequired(false)
+    )
+);
+
+// Purge
+commands.push(
+  makeCommand("purge", "Delete recent messages")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+    .addIntegerOption((option) =>
+      option
+        .setName("amount")
+        .setDescription("Number of messages to delete")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(100)
+    )
+);
+
+// Slowmode
+commands.push(
+  makeCommand("slowmode", "Set a channel's slowmode")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+    .addIntegerOption((option) =>
+      option
+        .setName("seconds")
+        .setDescription("Slowmode duration in seconds; 0 disables it")
+        .setRequired(true)
+        .setMinValue(0)
+        .setMaxValue(21600)
+    )
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel to update; defaults to this channel")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+);
+
+// Lock
+commands.push(
+  makeCommand("lock", "Lock a text channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel to lock; defaults to this channel")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+);
+
+// Unlock
+commands.push(
+  makeCommand("unlock", "Unlock a text channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel to unlock; defaults to this channel")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+);
+
+// Purge user
+commands.push(
+  makeCommand("purgeuser", "Delete recent messages from one member")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Member whose messages should be deleted")
+        .setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("amount")
+        .setDescription("Number of recent messages to inspect")
+        .setRequired(true)
+        .setMinValue(1)
+        .setMaxValue(100)
+    )
+);
+
+// Case
+commands.push(
+  makeCommand("case", "View a moderation case")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+    .addIntegerOption((option) =>
+      option
+        .setName("id")
+        .setDescription("Case ID")
+        .setRequired(true)
+        .setMinValue(1)
+    )
+);
+
+// Announcement
+commands.push(
+  makeCommand("announce", "Publish an announcement")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where the announcement will be published")
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("title")
+        .setDescription("Announcement title")
+        .setRequired(true)
+        .setMaxLength(256)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("message")
+        .setDescription("Announcement message")
+        .setRequired(true)
+        .setMaxLength(4000)
+    )
+);
+
+// Publish update
+commands.push(
+  makeCommand("publishupdate", "Publish a Garden Adventures game update")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where the update will be published")
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("version")
+        .setDescription("Update version, for example 1.2.0")
+        .setRequired(true)
+        .setMaxLength(50)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("title")
+        .setDescription("Update title")
+        .setRequired(true)
+        .setMaxLength(256)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("details")
+        .setDescription("What changed in this update?")
+        .setRequired(true)
+        .setMaxLength(4000)
+    )
+);
+
+// Poll
+commands.push(
+  makeCommand("poll", "Publish a poll with two choices")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where the poll will be published")
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question")
+        .setDescription("Poll question")
+        .setRequired(true)
+        .setMaxLength(256)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("option1")
+        .setDescription("First choice")
+        .setRequired(true)
+        .setMaxLength(100)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("option2")
+        .setDescription("Second choice")
+        .setRequired(true)
+        .setMaxLength(100)
+    )
+);
+
+// Embed
+commands.push(
+  makeCommand("embed", "Publish a custom embed")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where the embed will be published")
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("title")
+        .setDescription("Embed title")
+        .setRequired(true)
+        .setMaxLength(256)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("description")
+        .setDescription("Embed description")
+        .setRequired(true)
+        .setMaxLength(4000)
+    )
+);
+
+// Notification roles
+commands.push(
+  makeCommand("notificationroles", "Create a notification role panel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where the role panel will be published")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true)
+    )
+);
+
+// Health
+commands.push(
+  makeCommand("health", "Check the bot's health")
+);
+
+// Maintenance
+commands.push(
+  makeCommand("maintenance", "Enable or disable maintenance mode")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addBooleanOption((option) =>
+      option
+        .setName("enabled")
+        .setDescription("Whether maintenance mode should be enabled")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("message")
+        .setDescription("Optional maintenance message")
+        .setRequired(false)
+        .setMaxLength(500)
+    )
+);
+
+// ============================================================
+// REGISTER SLASH COMMANDS
+// ============================================================
+
+async function registerCommands() {
+  const rest = new REST({ version: "10" }).setToken(
+    process.env.DISCORD_TOKEN
+  );
+
+  const body = commands.map((command) => command.toJSON());
+
+  try {
+    if (process.env.GUILD_ID) {
+      await rest.put(
+        Routes.applicationGuildCommands(
+          process.env.CLIENT_ID,
+          process.env.GUILD_ID
+        ),
+        { body }
       );
 
-      messageTimes.delete(key);
-      recentMessages.delete(key);
+      console.log("Guild slash commands registered.");
+    } else {
+      await rest.put(
+        Routes.applicationCommands(process.env.CLIENT_ID),
+        { body }
+      );
+
+      console.log("Global slash commands registered.");
     }
   } catch (error) {
-    console.error("Message protection error:", error);
+    console.error("Could not register slash commands:", error);
   }
-});
+}
 
-// ---------------- Reaction notification roles ----------------
+// ============================================================
+// HELP COMMAND
+// ============================================================
+
+function helpEmbed() {
+  return new EmbedBuilder()
+    .setColor(GREEN)
+    .setTitle("🌿 Garden Adventures — Bot Commands")
+    .setDescription("Commands are grouped by their purpose.")
+    .addFields(
+      {
+        name: "🌱 General",
+        value: [
+          "`/help` — View this help menu",
+          "`/serverinfo` — Server information",
+          "`/membercount` — Member count",
+          "`/memberinfo` — Member details",
+          "`/profile` — Discord profile information",
+          "`/health` — Bot health status",
+        ].join("\n"),
+      },
+      {
+        name: "🛡️ Moderation",
+        value: [
+          "`/warn` — Warn a member",
+          "`/warnings` — View warnings",
+          "`/timeout` — Timeout a member",
+          "`/kick` — Kick a member",
+          "`/ban` — Ban a member",
+          "`/purge` — Delete recent messages",
+          "`/purgeuser` — Delete a member's recent messages",
+          "`/slowmode` — Configure slowmode",
+          "`/lock` — Lock a channel",
+          "`/unlock` — Unlock a channel",
+          "`/case` — View a moderation case",
+        ].join("\n"),
+      },
+      {
+        name: "📢 Server publishing",
+        value: [
+          "`/announce` — Publish an announcement",
+          "`/publishupdate` — Publish a game update",
+          "`/poll` — Publish a two-option poll",
+          "`/embed` — Publish a custom embed",
+          "`/notificationroles` — Create reaction notification roles",
+        ].join("\n"),
+      },
+      {
+        name: "⚙️ Administration",
+        value: [
+          "`/maintenance` — Manage maintenance mode",
+        ].join("\n"),
+      }
+    )
+    .setFooter({ text: "Garden Adventures Utility Bot" })
+    .setTimestamp();
+}
+
+// ============================================================
+// ANNOUNCEMENT AND UPDATE PUBLISHING
+// ============================================================
+
+async function publishAnnouncement(interaction) {
+  if (!staffOnly(interaction)) return;
+
+  const channel = interaction.options.getChannel("channel");
+  const title = interaction.options.getString("title");
+  const message = interaction.options.getString("message");
+
+  const me = getBotMember(interaction.guild);
+
+  if (
+    !me ||
+    !channel.permissionsFor(me)?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ])
+  ) {
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Cannot publish",
+          "I need permission to view the selected channel, send messages, and embed links.",
+          RED
+        ),
+      ],
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(GREEN)
+    .setTitle(`📢 ${title}`)
+    .setDescription(message)
+    .setFooter({ text: "Garden Adventures" })
+    .setTimestamp();
+
+  try {
+    const sent = await channel.send({ embeds: [embed] });
+
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Announcement published",
+          `Your announcement was published in ${channel}.\nMessage ID: \`${sent.id}\``
+        ),
+      ],
+    });
+  } catch (error) {
+    console.error("Announcement publishing failed:", error);
+
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Publishing failed",
+          "I could not publish the announcement. Check the channel permissions.",
+          RED
+        ),
+      ],
+    });
+  }
+}
+
+async function publishUpdate(interaction) {
+  if (!staffOnly(interaction)) return;
+
+  const channel = interaction.options.getChannel("channel");
+  const version = interaction.options.getString("version");
+  const title = interaction.options.getString("title");
+  const details = interaction.options.getString("details");
+
+  const me = getBotMember(interaction.guild);
+
+  if (
+    !me ||
+    !channel.permissionsFor(me)?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ])
+  ) {
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Cannot publish update",
+          "I need permission to view the selected channel, send messages, and embed links.",
+          RED
+        ),
+      ],
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(GREEN)
+    .setTitle(`🌿 ${title}`)
+    .setDescription(details)
+    .addFields({
+      name: "Update version",
+      value: `\`${version}\``,
+      inline: true,
+    })
+    .addFields({
+      name: "Game",
+      value: "Garden Adventures",
+      inline: true,
+    })
+    .setFooter({ text: "Garden Adventures • Game Update" })
+    .setTimestamp();
+
+  try {
+    const sent = await channel.send({ embeds: [embed] });
+
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Update published successfully",
+          `Your game update was published in ${channel}.\nVersion: \`${version}\`\nMessage ID: \`${sent.id}\``
+        ),
+      ],
+    });
+  } catch (error) {
+    console.error("Update publishing failed:", error);
+
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Publishing failed",
+          "I could not publish the update. Check the channel permissions.",
+          RED
+        ),
+      ],
+    });
+  }
+}
+
+// ============================================================
+// NOTIFICATION ROLES
+// ============================================================
 
 const ROLE_CHOICES = [
   { emoji: "🎮", name: "Game Updates" },
@@ -729,727 +895,1246 @@ const ROLE_CHOICES = [
   { emoji: "🌿", name: "Community News" },
 ];
 
-client.on("messageReactionAdd", async (reaction, user) => {
-  await handleRoleReaction(reaction, user, true);
-});
+async function createNotificationPanel(interaction) {
+  if (!staffOnly(interaction)) return;
 
-client.on("messageReactionRemove", async (reaction, user) => {
-  await handleRoleReaction(reaction, user, false);
-});
+  const channel = interaction.options.getChannel("channel");
+  const guild = interaction.guild;
+  const me = getBotMember(guild);
 
-async function handleRoleReaction(reaction, user, adding) {
-  try {
-    if (user.bot) return;
-
-    if (reaction.partial) await reaction.fetch();
-
-    const message = reaction.message;
-    if (message.partial) await message.fetch();
-    if (!message.guild) return;
-
-    const panel = db.notificationPanels[message.id];
-    if (!panel || panel.guildId !== message.guild.id) return;
-
-    const choice = panel.roles.find(
-      role => role.emoji === reaction.emoji.name
-    );
-
-    if (!choice) return;
-
-    const guild = message.guild;
-    const member = await guild.members.fetch(user.id).catch(() => null);
-    const role = await guild.roles.fetch(choice.roleId).catch(() => null);
-    const botMember = guild.members.me;
-
-    if (!member || !role || !botMember) return;
-    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) return;
-    if (role.position >= botMember.roles.highest.position) return;
-
-    if (adding) {
-      await member.roles.add(role, "Reaction notification role").catch(() => null);
-    } else {
-      await member.roles.remove(role, "Reaction removed from notification panel").catch(() => null);
-    }
-  } catch (error) {
-    console.error("Reaction-role error:", error);
+  if (!me) {
+    return privateReply(interaction, "I could not access my server member information.");
   }
-}
 
-// ---------------- Slash command handling ----------------
+  if (
+    !channel.permissionsFor(me)?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.ManageRoles,
+    ])
+  ) {
+    return privateReply(interaction, {
+      embeds: [
+        makeEmbed(
+          "Missing permissions",
+          "I need View Channel, Send Messages, Embed Links, Add Reactions, and Manage Roles permissions.",
+          RED
+        ),
+      ],
+    });
+  }
 
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const command = interaction.commandName;
+  const roleMap = {};
 
   try {
-    const maintenance = db.maintenance[interaction.guildId];
-
-    if (
-      maintenance?.enabled &&
-      !["health", "maintenance", "help"].includes(command) &&
-      !isAdmin(interaction)
-    ) {
-      return deny(
-        interaction,
-        `The bot is in maintenance mode. ${maintenance.reason || ""}`
-      );
-    }
-
-    if (command === "help") {
-      return privateReply(interaction, {
-        embeds: [
-          makeEmbed(
-            "Garden Adventures Bot",
-            "**Community**\n" +
-            "/help, /serverinfo, /membercount, /memberinfo, /profile\n\n" +
-            "**Moderation**\n" +
-            "/warn, /warnings, /timeout, /kick, /ban, /purge, " +
-            "/slowmode, /lock, /unlock, /purgeuser, /case\n\n" +
-            "**Publishing**\n" +
-            "/announce, /poll, /embed, /notificationroles\n\n" +
-            "**System**\n/health, /maintenance"
-          ),
-        ],
-      });
-    }
-
-    if (command === "serverinfo") {
-      const guild = interaction.guild;
-
-      const embed = makeEmbed(
-        guild.name,
-        `**Members:** ${guild.memberCount}\n` +
-        `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>\n` +
-        `**Server ID:** \`${guild.id}\``
+    for (const choice of ROLE_CHOICES) {
+      let role = guild.roles.cache.find(
+        (item) => item.name === choice.name
       );
 
-      if (guild.iconURL()) embed.setThumbnail(guild.iconURL());
-
-      return privateReply(interaction, { embeds: [embed] });
-    }
-
-    if (command === "membercount") {
-      return privateReply(
-        interaction,
-        `This server currently has **${interaction.guild.memberCount.toLocaleString()}** members.`
-      );
-    }
-
-    if (command === "memberinfo" || command === "profile") {
-      const user =
-        interaction.options.getUser("member") || interaction.user;
-
-      const member = await interaction.guild.members
-        .fetch(user.id).catch(() => null);
-
-      const roles = member
-        ? member.roles.cache
-            .filter(role => role.id !== interaction.guild.id)
-            .map(role => role.toString())
-            .slice(0, 15)
-            .join(", ") || "No roles"
-        : "Not currently in this server";
-
-      const embed = makeEmbed(
-        command === "profile"
-          ? `${user.username}'s Profile`
-          : "Member Information",
-        `**Username:** ${user.tag}\n` +
-        `**User ID:** \`${user.id}\`\n` +
-        `**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:F>\n` +
-        `**Joined server:** ${member?.joinedTimestamp
-          ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>`
-          : "Not available"}\n` +
-        `**Roles:** ${roles}`
-      );
-
-      embed.setThumbnail(user.displayAvatarURL());
-
-      return privateReply(interaction, { embeds: [embed] });
-    }
-
-    if (command === "warn") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ModerateMembers)) {
-        return deny(interaction, "You need the Moderate Members permission.");
-      }
-
-      const user = interaction.options.getUser("member");
-      const reason = interaction.options.getString("reason");
-
-      if (user.bot || user.id === interaction.user.id) {
-        return deny(interaction, "You cannot warn yourself or a bot.");
-      }
-
-      const key = `${interaction.guildId}:${user.id}`;
-      const list = db.warnings[key] ||= [];
-
-      list.push({
-        reason,
-        moderator: interaction.user.id,
-        date: Date.now(),
-      });
-
-      const entry = recordCase(
-        interaction.guildId,
-        user.id,
-        interaction.user.id,
-        "Warning",
-        reason
-      );
-
-      saveData();
-
-      await user.send({
-        embeds: [
-          makeEmbed(
-            "Community Warning",
-            `You received a warning in **${interaction.guild.name}**.\n` +
-            `**Reason:** ${reason}`
-          ),
-        ],
-      }).catch(() => null);
-
-      await logModeration(interaction.guild, entry);
-
-      return privateReply(interaction, {
-        embeds: [
-          makeEmbed(
-            "Warning Recorded",
-            `${user} has been warned.\n**Case:** #${entry.id}\n` +
-            `**Reason:** ${reason}`
-          ),
-        ],
-      });
-    }
-
-    if (command === "warnings") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ModerateMembers)) {
-        return deny(interaction, "You need the Moderate Members permission.");
-      }
-
-      const user = interaction.options.getUser("member");
-      const warnings = db.warnings[`${interaction.guildId}:${user.id}`] || [];
-
-      const description = warnings.length
-        ? warnings.map((warning, index) =>
-            `**${index + 1}.** ${warning.reason}\n` +
-            `Moderator: <@${warning.moderator}> · ` +
-            `<t:${Math.floor(warning.date / 1000)}:R>`
-          ).join("\n\n")
-        : "No warnings recorded for this member.";
-
-      return privateReply(interaction, {
-        embeds: [makeEmbed(`Warnings: ${user.tag}`, description)],
-      });
-    }
-
-    if (command === "timeout") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ModerateMembers)) {
-        return deny(interaction, "You need the Moderate Members permission.");
-      }
-
-      const user = interaction.options.getUser("member");
-      const minutes = interaction.options.getInteger("minutes");
-      const reason = interaction.options.getString("reason");
-
-      if (user.id === interaction.user.id || user.id === client.user.id) {
-        return deny(interaction, "You cannot timeout yourself or the bot.");
-      }
-
-      const member = await interaction.guild.members
-        .fetch(user.id).catch(() => null);
-
-      if (!member?.moderatable) {
-        return deny(interaction, "I cannot timeout that member. Check permissions and role positions.");
-      }
-
-      await member.timeout(minutes * 60000, reason);
-
-      const entry = recordCase(
-        interaction.guildId,
-        user.id,
-        interaction.user.id,
-        "Timeout",
-        reason,
-        { durationMinutes: minutes }
-      );
-
-      await logModeration(interaction.guild, entry);
-
-      return privateReply(interaction, {
-        embeds: [
-          makeEmbed(
-            "Member Timed Out",
-            `**Member:** ${user.tag}\n` +
-            `**Duration:** ${minutes} minutes\n` +
-            `**Case:** #${entry.id}\n**Reason:** ${reason}`
-          ),
-        ],
-      });
-    }
-
-    if (command === "kick" || command === "ban") {
-      const permission = command === "kick"
-        ? PermissionFlagsBits.KickMembers
-        : PermissionFlagsBits.BanMembers;
-
-      if (!hasPermission(interaction, permission)) {
-        return deny(interaction, `You need the ${command === "kick" ? "Kick Members" : "Ban Members"} permission.`);
-      }
-
-      const user = interaction.options.getUser("member");
-      const reason = interaction.options.getString("reason");
-
-      if (user.id === interaction.user.id || user.id === client.user.id) {
-        return deny(interaction, `You cannot ${command} yourself or the bot.`);
-      }
-
-      const member = await interaction.guild.members
-        .fetch(user.id).catch(() => null);
-
-      if (command === "kick") {
-        if (!member?.kickable) {
-          return deny(interaction, "I cannot kick that member. Check role positions and permissions.");
-        }
-
-        await member.kick(reason);
-      } else {
-        if (member && !member.bannable) {
-          return deny(interaction, "I cannot ban that member. Check role positions and permissions.");
-        }
-
-        await interaction.guild.members.ban(user.id, { reason });
-      }
-
-      const entry = recordCase(
-        interaction.guildId,
-        user.id,
-        interaction.user.id,
-        command === "kick" ? "Kick" : "Ban",
-        reason
-      );
-
-      await logModeration(interaction.guild, entry);
-
-      return privateReply(interaction, {
-        embeds: [
-          makeEmbed(
-            command === "kick" ? "Member Kicked" : "Member Banned",
-            `**Member:** ${user.tag}\n**Case:** #${entry.id}\n` +
-            `**Reason:** ${reason}`
-          ),
-        ],
-      });
-    }
-
-    if (command === "purge") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
-        return deny(interaction, "You need Manage Messages permission.");
-      }
-
-      const channel = interaction.channel;
-      if (!channel?.messages || !channel.bulkDelete) {
-        return deny(interaction, "This command cannot be used in this channel.");
-      }
-
-      const amount = interaction.options.getInteger("amount");
-      const deleted = await channel.bulkDelete(amount, true);
-
-      return privateReply(
-        interaction,
-        `Deleted ${deleted.size} recent messages. Messages older than 14 days cannot be bulk-deleted.`
-      );
-    }
-
-    if (command === "slowmode") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageChannels)) {
-        return deny(interaction, "You need Manage Channels permission.");
-      }
-
-      const channel =
-        interaction.options.getChannel("channel") || interaction.channel;
-
-      if (!channel?.setRateLimitPerUser) {
-        return deny(interaction, "Choose a text channel that supports slowmode.");
-      }
-
-      const seconds = interaction.options.getInteger("seconds");
-
-      await channel.setRateLimitPerUser(
-        seconds,
-        `Changed by ${interaction.user.tag}`
-      );
-
-      return privateReply(
-        interaction,
-        `Slowmode for ${channel} set to **${seconds} seconds**.`
-      );
-    }
-
-    if (command === "lock" || command === "unlock") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageChannels)) {
-        return deny(interaction, "You need Manage Channels permission.");
-      }
-
-      const channel =
-        interaction.options.getChannel("channel") || interaction.channel;
-
-      if (!channel?.permissionOverwrites) {
-        return deny(interaction, "Choose a text channel.");
-      }
-
-      const reason =
-        interaction.options.getString("reason") ||
-        `Changed by ${interaction.user.tag}`;
-
-      await channel.permissionOverwrites.edit(
-        interaction.guild.roles.everyone,
-        {
-          SendMessages: command === "lock" ? false : null,
-          AddReactions: command === "lock" ? false : null,
-          SendMessagesInThreads: command === "lock" ? false : null,
-        },
-        { reason }
-      );
-
-      return privateReply(
-        interaction,
-        `${channel} has been ${command === "lock" ? "locked" : "unlocked"}.`
-      );
-    }
-
-    if (command === "purgeuser") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
-        return deny(interaction, "You need Manage Messages permission.");
-      }
-
-      const channel = interaction.channel;
-      if (!channel?.messages || !channel.bulkDelete) {
-        return deny(interaction, "Use this command in a text channel.");
-      }
-
-      const user = interaction.options.getUser("member");
-      const amount = interaction.options.getInteger("amount");
-      const fetched = await channel.messages.fetch({ limit: amount });
-
-      const matching = fetched.filter(message =>
-        message.author.id === user.id &&
-        Date.now() - message.createdTimestamp < 14 * 24 * 60 * 60 * 1000
-      );
-
-      const deleted = matching.size
-        ? await channel.bulkDelete(matching, true)
-        : { size: 0 };
-
-      return privateReply(
-        interaction,
-        `Deleted **${deleted.size}** recent messages from ${user} in ${channel}.`
-      );
-    }
-
-    if (command === "case") {
-      if (!isStaff(interaction)) {
-        return deny(interaction, "You need moderation staff permissions.");
-      }
-
-      const id = String(interaction.options.getInteger("id"));
-      const entry = db.cases[id];
-
-      if (!entry || entry.guildId !== interaction.guildId) {
-        return deny(interaction, "That case was not found in this server.");
-      }
-
-      return privateReply(interaction, {
-        embeds: [
-          makeEmbed(
-            `Moderation Case #${entry.id}`,
-            `**Action:** ${entry.action}\n` +
-            `**Member:** <@${entry.targetId}>\n` +
-            `**Moderator:** <@${entry.moderatorId}>\n` +
-            `**Reason:** ${entry.reason}\n` +
-            `**Date:** <t:${Math.floor(entry.timestamp / 1000)}:F>` +
-            (entry.durationMinutes
-              ? `\n**Duration:** ${entry.durationMinutes} minutes`
-              : "")
-          ),
-        ],
-      });
-    }
-
-    if (command === "announce") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-        return deny(interaction, "You need Manage Server permission.");
-      }
-
-      const channel = interaction.options.getChannel("channel");
-      const title = interaction.options.getString("title");
-      const message = interaction.options.getString("message");
-
-      if (
-        !channel.isTextBased() ||
-        !channel.permissionsFor(interaction.guild.members.me)
-          ?.has(PermissionFlagsBits.SendMessages)
-      ) {
-        return deny(interaction, "I cannot send messages in that channel.");
-      }
-
-      await channel.send({
-        embeds: [
-          makeEmbed(title, message).setFooter({
-            text: `Published by ${interaction.user.tag}`,
-          }),
-        ],
-      });
-
-      return privateReply(interaction, `Announcement published in ${channel}.`);
-    }
-
-    if (command === "poll") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-        return deny(interaction, "You need Manage Server permission.");
-      }
-
-      const channel = interaction.options.getChannel("channel");
-      const question = interaction.options.getString("question");
-      const options = interaction.options.getString("options")
-        .split("|")
-        .map(option => option.trim())
-        .filter(Boolean);
-
-      if (options.length < 2 || options.length > 10) {
-        return deny(interaction, "Provide 2–10 options separated by the | character.");
-      }
-
-      const botPermissions = channel.permissionsFor(interaction.guild.members.me);
-
-      if (
-        !channel.isTextBased() ||
-        !botPermissions?.has([
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.AddReactions,
-          PermissionFlagsBits.EmbedLinks,
-        ])
-      ) {
-        return deny(interaction, "I need Send Messages, Add Reactions and Embed Links permissions in that channel.");
-      }
-
-      const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-
-      const description = options
-        .map((option, index) => `${emojis[index]} ${option}`)
-        .join("\n");
-
-      const pollMessage = await channel.send({
-        embeds: [
-          makeEmbed(`📊 ${question}`, description).setFooter({
-            text: `Poll created by ${interaction.user.tag}`,
-          }),
-        ],
-      });
-
-      for (let index = 0; index < options.length; index++) {
-        await pollMessage.react(emojis[index]);
-      }
-
-      return privateReply(interaction, `Poll published in ${channel}.`);
-    }
-
-    if (command === "embed") {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-        return deny(interaction, "You need Manage Server permission.");
-      }
-
-      const channel = interaction.options.getChannel("channel");
-      const title = interaction.options.getString("title");
-      const description = interaction.options.getString("description");
-
-      const botPermissions = channel.permissionsFor(interaction.guild.members.me);
-
-      if (
-        !channel.isTextBased() ||
-        !botPermissions?.has([
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.EmbedLinks,
-        ])
-      ) {
-        return deny(interaction, "I need Send Messages and Embed Links permissions in that channel.");
-      }
-
-      await channel.send({
-        embeds: [
-          makeEmbed(title, description).setFooter({
-            text: `Published by ${interaction.user.tag}`,
-          }),
-        ],
-      });
-
-      return privateReply(interaction, `Embed published in ${channel}.`);
-    }
-
-    if (command === "notificationroles") {
-      if (!canManageRoles(interaction.member)) {
-        return deny(interaction, "You need Manage Roles or Manage Server permission.");
-      }
-
-      const channel = interaction.options.getChannel("channel");
-      const botPermissions = channel.permissionsFor(interaction.guild.members.me);
-
-      if (
-        !channel.isTextBased() ||
-        !botPermissions?.has([
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.EmbedLinks,
-          PermissionFlagsBits.AddReactions,
-        ]) ||
-        !interaction.guild.members.me.permissions.has(
-          PermissionFlagsBits.ManageRoles
-        )
-      ) {
-        return deny(interaction, "I need Send Messages, Embed Links, Add Reactions and Manage Roles permissions.");
-      }
-
-      const roleEntries = [];
-
-      for (const choice of ROLE_CHOICES) {
-        let role = interaction.guild.roles.cache.find(
-          existing => existing.name === choice.name
-        );
-
-        if (!role) {
-          role = await interaction.guild.roles.create({
-            name: choice.name,
-            color: GREEN,
-            mentionable: false,
-            reason: "Garden Adventures notification role setup",
-          });
-        }
-
-        if (
-          role.position >=
-          interaction.guild.members.me.roles.highest.position
-        ) {
-          return deny(
-            interaction,
-            `Move my bot role above **${role.name}** in Server Settings → Roles, then run this command again.`
-          );
-        }
-
-        roleEntries.push({
-          emoji: choice.emoji,
-          roleId: role.id,
+      if (!role) {
+        role = await guild.roles.create({
           name: choice.name,
+          color: GREEN,
+          reason: "Creating Garden Adventures notification roles",
         });
       }
 
-      const description = roleEntries
-        .map(role => `${role.emoji} — **${role.name}**`)
-        .join("\n");
-
-      const panelMessage = await channel.send({
-        embeds: [
-          makeEmbed(
-            "Garden Adventures Notification Roles",
-            "React below to get or remove notification roles.\n\n" +
-            `${description}\n\nYou can select as many as you like.`
-          ),
-        ],
-      });
-
-      for (const role of roleEntries) {
-        await panelMessage.react(role.emoji);
+      if (role.position >= me.roles.highest.position) {
+        return interaction.editReply({
+          embeds: [
+            makeEmbed(
+              "Role hierarchy issue",
+              `I cannot manage the **${role.name}** role because it is at or above my highest role. Move my bot role above the notification roles and try again.`,
+              RED
+            ),
+          ],
+        });
       }
 
-      db.notificationPanels[panelMessage.id] = {
-        guildId: interaction.guildId,
-        channelId: channel.id,
-        roles: roleEntries,
+      roleMap[choice.emoji] = {
+        roleId: role.id,
+        name: choice.name,
       };
-
-      saveData();
-
-      return privateReply(
-        interaction,
-        `Notification-role panel published in ${channel}.`
-      );
     }
 
-    if (command === "health") {
-      let storage = "OK";
+    const description = ROLE_CHOICES.map(
+      (choice) =>
+        `${choice.emoji} — **${choice.name}**`
+    ).join("\n");
 
-      try {
-        fs.accessSync(DATA_FILE, fs.constants.R_OK | fs.constants.W_OK);
-        JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-      } catch {
-        storage = "Error";
-      }
+    const embed = new EmbedBuilder()
+      .setColor(GREEN)
+      .setTitle("🔔 Garden Adventures Notifications")
+      .setDescription(
+        "React below to choose which notifications you want to receive.\n\n" +
+        description +
+        "\n\nRemove your reaction to remove that notification role."
+      )
+      .setFooter({ text: "You can select more than one role." })
+      .setTimestamp();
 
-      return privateReply(interaction, {
-        embeds: [
-          makeEmbed(
-            "Bot Health",
-            `**Status:** Online\n` +
-            `**WebSocket latency:** ${Math.round(client.ws.ping)} ms\n` +
-            `**Storage:** ${storage}\n` +
-            `**Uptime:** ${Math.floor(process.uptime() / 60)} minutes`
-          ),
-        ],
-      });
+    const panelMessage = await channel.send({ embeds: [embed] });
+
+    for (const choice of ROLE_CHOICES) {
+      await panelMessage.react(choice.emoji);
     }
 
-    if (command === "maintenance") {
-      if (!isAdmin(interaction)) {
-        return deny(interaction, "Only server administrators can change maintenance mode.");
-      }
+    db.notificationPanels[guild.id] = {
+      channelId: channel.id,
+      messageId: panelMessage.id,
+      roles: roleMap,
+    };
 
-      const enabled = interaction.options.getBoolean("enabled");
-      const reason =
-        interaction.options.getString("reason") || "No reason provided";
+    saveData();
 
-      db.maintenance[interaction.guildId] = {
-        enabled,
-        reason,
-        changedBy: interaction.user.id,
-        changedAt: Date.now(),
-      };
-
-      saveData();
-
-      return privateReply(
-        interaction,
-        enabled
-          ? `Maintenance mode enabled. Reason: ${reason}`
-          : "Maintenance mode disabled. Normal command access has resumed."
-      );
-    }
-
-    return deny(interaction, "That command is not implemented.");
+    return interaction.editReply({
+      embeds: [
+        makeEmbed(
+          "Notification panel created",
+          `The notification role panel has been published in ${channel}.\n\nThe roles have been created if they did not already exist. Make sure the bot's highest role stays above them.`
+        ),
+      ],
+    });
   } catch (error) {
-    console.error(`Error in /${command}:`, error);
+    console.error("Notification panel creation failed:", error);
 
-    await privateReply(
-      interaction,
-      "Something went wrong while running this command. Check the bot console or contact an administrator."
-    ).catch(() => null);
-  }
-});
-
-client.on("error", error => {
-  console.error("Discord client error:", error);
-});
-
-process.on("unhandledRejection", error => {
-  console.error("Unhandled rejection:", error);
-});
-
-async function startBot() {
-  try {
-    await registerCommands();
-    await client.login(TOKEN);
-  } catch (error) {
-    console.error("Bot startup failed:", error);
-    process.exit(1);
+    return interaction.editReply({
+      embeds: [
+        makeEmbed(
+          "Could not create panel",
+          "Something went wrong while creating the notification roles or publishing the panel. Check the bot's role hierarchy and permissions.",
+          RED
+        ),
+      ],
+    });
   }
 }
 
-startBot();
+async function handleNotificationReaction(reaction, user, addRole) {
+  try {
+    if (user.bot) return;
+
+    if (reaction.partial) {
+      await reaction.fetch();
+    }
+
+    const message = reaction.message;
+    if (!message.guild) return;
+
+    const panel = db.notificationPanels[message.guild.id];
+    if (!panel) return;
+
+    if (message.id !== panel.messageId) return;
+
+    const emoji = reaction.emoji.name;
+    const entry = panel.roles?.[emoji];
+    if (!entry) return;
+
+    const member = await message.guild.members.fetch(user.id);
+    const role = await message.guild.roles.fetch(entry.roleId);
+
+    if (!role || !member) return;
+
+    const me = getBotMember(message.guild);
+    if (!me || !me.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      console.error("Cannot manage notification roles: missing Manage Roles.");
+      return;
+    }
+
+    if (role.position >= me.roles.highest.position) {
+      console.error(`Cannot manage role ${role.name}: role hierarchy issue.`);
+      return;
+    }
+
+    if (addRole) {
+      await member.roles.add(role, "Selected a notification role");
+    } else {
+      await member.roles.remove(role, "Removed a notification role");
+    }
+  } catch (error) {
+    console.error("Notification reaction handling failed:", error);
+  }
+}
+
+client.on("messageReactionAdd", async (reaction, user) => {
+  await handleNotificationReaction(reaction, user, true);
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  await handleNotificationReaction(reaction, user, false);
+});
+
+// ============================================================
+// ANTI-SPAM AND INVITE PROTECTION
+// ============================================================
+
+const recentMessages = new Map();
+const spamCooldowns = new Map();
+
+const SPAM_WINDOW_MS = 7000;
+const SPAM_MESSAGE_LIMIT = 6;
+const SPAM_TIMEOUT_MINUTES = 2;
+
+function containsDiscordInvite(content) {
+  return /(?:discord\.gg\/|discord(?:app)?\.com\/invite\/|discord\.me\/)/i.test(
+    content
+  );
+}
+
+function hasStaffExemption(member) {
+  if (!member) return false;
+
+  return (
+    member.permissions.has(PermissionFlagsBits.Administrator) ||
+    member.permissions.has(PermissionFlagsBits.ManageGuild) ||
+    member.permissions.has(PermissionFlagsBits.ManageMessages)
+  );
+}
+
+client.on("messageCreate", async (message) => {
+  if (!message.guild || message.author.bot) return;
+
+  const guild = message.guild;
+  const member = message.member;
+
+  if (!member || hasStaffExemption(member)) return;
+
+  const maintenance = db.maintenance[guild.id];
+
+  // Invite protection
+  if (containsDiscordInvite(message.content)) {
+    try {
+      if (
+        canBot(guild, [
+          PermissionFlagsBits.ManageMessages,
+        ])
+      ) {
+        await message.delete().catch(() => {});
+      }
+
+      await message.channel.send({
+        content: `${message.author}, Discord invite links are not allowed here.`,
+      }).then((sent) => {
+        setTimeout(() => sent.delete().catch(() => {}), 5000);
+      }).catch(() => {});
+
+      await sendSecurityAlert(
+        guild,
+        "Discord invite blocked",
+        `A Discord invite link was detected from ${message.author} in ${message.channel}.`
+      );
+    } catch (error) {
+      console.error("Invite protection failed:", error);
+    }
+
+    return;
+  }
+
+  // Anti-spam
+  const key = `${guild.id}:${message.author.id}`;
+  const now = Date.now();
+
+  const recent = (recentMessages.get(key) || []).filter(
+    (timestamp) => now - timestamp < SPAM_WINDOW_MS
+  );
+
+  recent.push(now);
+  recentMessages.set(key, recent);
+
+  if (recent.length >= SPAM_MESSAGE_LIMIT) {
+    if (spamCooldowns.get(key) && now < spamCooldowns.get(key)) {
+      return;
+    }
+
+    spamCooldowns.set(key, now + 30000);
+
+    try {
+      if (
+        canBot(guild, [
+          PermissionFlagsBits.ManageMessages,
+        ])
+      ) {
+        await message.channel.bulkDelete(
+          Math.min(recent.length, 100),
+          true
+        ).catch(() => {});
+      }
+
+      if (
+        canBot(guild, [
+          PermissionFlagsBits.ModerateMembers,
+        ])
+      ) {
+        await member.timeout(
+          SPAM_TIMEOUT_MINUTES * 60 * 1000,
+          "Automatic anti-spam protection"
+        ).catch(() => {});
+      }
+
+      await sendSecurityAlert(
+        guild,
+        "Anti-spam triggered",
+        `${message.author} sent too many messages in a short period. The bot attempted to remove recent messages and apply a short timeout if permissions allowed.`
+      );
+    } catch (error) {
+      console.error("Anti-spam action failed:", error);
+    }
+
+    recentMessages.delete(key);
+  }
+
+  // Maintenance mode is informational; it does not automatically block messages.
+  if (maintenance?.enabled) {
+    // Reserved for future maintenance restrictions.
+  }
+});
+
+// ============================================================
+// RAID PROTECTION
+// ============================================================
+
+const recentJoins = new Map();
+const RAID_WINDOW_MS = 15000;
+const RAID_JOIN_LIMIT = 10;
+
+client.on("guildMemberAdd", async (member) => {
+  const guild = member.guild;
+  const now = Date.now();
+
+  const joins = (recentJoins.get(guild.id) || []).filter(
+    (timestamp) => now - timestamp < RAID_WINDOW_MS
+  );
+
+  joins.push(now);
+  recentJoins.set(guild.id, joins);
+
+  if (joins.length >= RAID_JOIN_LIMIT) {
+    await sendSecurityAlert(
+      guild,
+      "⚠️ Possible join raid detected",
+      `${joins.length} members have joined within approximately ${RAID_WINDOW_MS / 1000} seconds.\n\nPlease ask staff to review the server. The bot does not automatically mass-ban members.`
+    );
+
+    // Avoid sending an alert for every single join during the same burst.
+    recentJoins.set(guild.id, []);
+  }
+});
+
+// ============================================================
+// INTERACTION HANDLER
+// ============================================================
+
+client.on("interactionCreate", async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      if (!interaction.guild && interaction.commandName !== "help") {
+        return privateReply(
+          interaction,
+          "This command can only be used in a server."
+        );
+      }
+
+      const command = interaction.commandName;
+
+      // Help
+      if (command === "help") {
+        return privateReply(interaction, {
+          embeds: [helpEmbed()],
+        });
+      }
+
+      // Server info
+      if (command === "serverinfo") {
+        const guild = interaction.guild;
+
+        return privateReply(interaction, {
+          embeds: [
+            new EmbedBuilder()
+              .setColor(GREEN)
+              .setTitle(`📊 ${guild.name}`)
+              .setThumbnail(guild.iconURL({ size: 256 }))
+              .addFields(
+                {
+                  name: "Server ID",
+                  value: guild.id,
+                  inline: true,
+                },
+                {
+                  name: "Members",
+                  value: String(guild.memberCount),
+                  inline: true,
+                },
+                {
+                  name: "Text and voice channels",
+                  value: String(guild.channels.cache.size),
+                  inline: true,
+                },
+                {
+                  name: "Created",
+                  value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:D>`,
+                  inline: true,
+                },
+                {
+                  name: "Owner",
+                  value: `<@${guild.ownerId}>`,
+                  inline: true,
+                },
+                {
+                  name: "Boost level",
+                  value: String(guild.premiumTier),
+                  inline: true,
+                }
+              )
+              .setTimestamp(),
+          ],
+        });
+      }
+
+      // Member count
+      if (command === "membercount") {
+        const guild = interaction.guild;
+
+        return privateReply(interaction, {
+          embeds: [
+            makeEmbed(
+              "👥 Server Member Count",
+              `**Total members:** ${guild.memberCount}\n**Bots:** ${guild.members.cache.filter((m) => m.user.bot).size} currently cached.`
+            ),
+          ],
+        });
+      }
+
+      // Member info
+      if (command === "memberinfo" || command === "profile") {
+        const user =
+          interaction.options.getUser("user") || interaction.user;
+
+        let member = null;
+
+        try {
+          member = await interaction.guild.members.fetch(user.id);
+        } catch {
+          // The user may no longer be in the server.
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(GREEN)
+          .setTitle(command === "profile" ? "👤 Profile" : "ℹ️ Member Information")
+          .setThumbnail(user.displayAvatarURL({ size: 256 }))
+          .addFields(
+            {
+              name: "Username",
+              value: user.tag,
+              inline: true,
+            },
+            {
+              name: "User ID",
+              value: user.id,
+              inline: true,
+            },
+            {
+              name: "Account created",
+              value: `<t:${Math.floor(user.createdTimestamp / 1000)}:D>`,
+              inline: true,
+            },
+            {
+              name: "In this server",
+              value: member
+                ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:D>`
+                : "Not currently a member",
+              inline: true,
+            },
+            {
+              name: "Bot account",
+              value: user.bot ? "Yes" : "No",
+              inline: true,
+            },
+            {
+              name: "Roles",
+              value: member
+                ? truncate(
+                    member.roles.cache
+                      .filter((role) => role.id !== interaction.guild.id)
+                      .map((role) => role.toString())
+                      .join(", ") || "No roles",
+                    1000
+                  )
+                : "Unavailable",
+            }
+          )
+          .setTimestamp();
+
+        return privateReply(interaction, { embeds: [embed] });
+      }
+
+      // Health
+      if (command === "health") {
+        const latency = Math.round(client.ws.ping);
+
+        return privateReply(interaction, {
+          embeds: [
+            new EmbedBuilder()
+              .setColor(GREEN)
+              .setTitle("💚 Bot Health")
+              .addFields(
+                {
+                  name: "Status",
+                  value: "Online",
+                  inline: true,
+                },
+                {
+                  name: "WebSocket latency",
+                  value: `${latency} ms`,
+                  inline: true,
+                },
+                {
+                  name: "Uptime",
+                  value: `${Math.floor(client.uptime / 1000)} seconds`,
+                  inline: true,
+                },
+                {
+                  name: "Guilds",
+                  value: String(client.guilds.cache.size),
+                  inline: true,
+                }
+              )
+              .setTimestamp(),
+          ],
+        });
+      }
+
+      // Maintenance
+      if (command === "maintenance") {
+        if (!adminOnly(interaction)) return;
+
+        const enabled = interaction.options.getBoolean("enabled");
+        const message =
+          interaction.options.getString("message") ||
+          "Garden Adventures is currently undergoing maintenance.";
+
+        db.maintenance[interaction.guild.id] = {
+          enabled,
+          message,
+          updatedBy: interaction.user.id,
+          updatedAt: new Date().toISOString(),
+        };
+
+        saveData();
+
+        return privateReply(interaction, {
+          embeds: [
+            makeEmbed(
+              enabled ? "🔧 Maintenance enabled" : "✅ Maintenance disabled",
+              enabled
+                ? `Maintenance mode has been enabled for this server.\n\nMessage: ${message}`
+                : "Maintenance mode has been disabled."
+            ),
+          ],
+        });
+      }
+
+      // Announcement
+      if (command === "announce") {
+        return publishAnnouncement(interaction);
+      }
+
+      // Publish update
+      if (command === "publishupdate") {
+        return publishUpdate(interaction);
+      }
+
+      // Notification roles
+      if (command === "notificationroles") {
+        return createNotificationPanel(interaction);
+      }
+
+      // Poll
+      if (command === "poll") {
+        if (!staffOnly(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel");
+        const question = interaction.options.getString("question");
+        const option1 = interaction.options.getString("option1");
+        const option2 = interaction.options.getString("option2");
+        const me = getBotMember(interaction.guild);
+
+        if (
+          !me ||
+          !channel.permissionsFor(me)?.has([
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.EmbedLinks,
+            PermissionFlagsBits.AddReactions,
+          ])
+        ) {
+          return privateReply(
+            interaction,
+            "I need permission to send messages, embed links, and add reactions in that channel."
+          );
+        }
+
+        try {
+          const sent = await channel.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(GREEN)
+                .setTitle(`📊 ${question}`)
+                .setDescription(
+                  `🇦 **${option1}**\n\n🇧 **${option2}**`
+                )
+                .setFooter({ text: "React to vote!" })
+                .setTimestamp(),
+            ],
+          });
+
+          await sent.react("🇦");
+          await sent.react("🇧");
+
+          return privateReply(
+            interaction,
+            `Poll published successfully in ${channel}.`
+          );
+        } catch (error) {
+          console.error("Poll publishing failed:", error);
+
+          return privateReply(
+            interaction,
+            "I couldn't publish the poll. Please check my permissions."
+          );
+        }
+      }
+
+      // Custom embed
+      if (command === "embed") {
+        if (!staffOnly(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel");
+        const title = interaction.options.getString("title");
+        const description = interaction.options.getString("description");
+        const me = getBotMember(interaction.guild);
+
+        if (
+          !me ||
+          !channel.permissionsFor(me)?.has([
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.EmbedLinks,
+          ])
+        ) {
+          return privateReply(
+            interaction,
+            "I need permission to send messages and embed links in that channel."
+          );
+        }
+
+        try {
+          await channel.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(GREEN)
+                .setTitle(title)
+                .setDescription(description)
+                .setFooter({ text: "Garden Adventures" })
+                .setTimestamp(),
+            ],
+          });
+
+          return privateReply(
+            interaction,
+            `Your embed has been published in ${channel}.`
+          );
+        } catch (error) {
+          console.error("Embed publishing failed:", error);
+
+          return privateReply(
+            interaction,
+            "I couldn't publish the embed. Please check my permissions."
+          );
+        }
+      }
+
+      // Warn
+      if (command === "warn") {
+        if (!staffOnly(interaction)) return;
+
+        const user = interaction.options.getUser("user");
+        const reason = safeReason(
+          interaction.options.getString("reason")
+        );
+
+        if (user.id === interaction.user.id) {
+          return privateReply(interaction, "You cannot warn yourself.");
+        }
+
+        if (user.bot) {
+          return privateReply(interaction, "You cannot warn a bot.");
+        }
+
+        const key = `${interaction.guild.id}:${user.id}`;
+
+        db.warnings[key] ||= [];
+
+        db.warnings[key].push({
+          moderatorId: interaction.user.id,
+          reason,
+          timestamp: new Date().toISOString(),
+        });
+
+        const entry = saveCase(
+          interaction.guild,
+          "WARN",
+          user.id,
+          interaction.user.id,
+          reason
+        );
+
+        saveData();
+
+        await logModeration(
+          interaction.guild,
+          "⚠️ Member warned",
+          `**Member:** ${user.tag} (${user.id})\n**Moderator:** ${interaction.user.tag}\n**Reason:** ${reason}\n**Case:** #${entry.id}`
+        );
+
+        return privateReply(interaction, {
+          embeds: [
+            makeEmbed(
+              "Warning recorded",
+              `${user} has been warned.\n**Reason:** ${reason}\n**Case:** #${entry.id}`
+            ),
+          ],
+        });
+      }
+
+      // Warnings
+      if (command === "warnings") {
+        if (!staffOnly(interaction)) return;
+
+        const user = interaction.options.getUser("user");
+        const key = `${interaction.guild.id}:${user.id}`;
+        const warnings = db.warnings[key] || [];
+
+        const description = warnings.length
+          ? warnings
+              .slice(-10)
+              .map(
+                (warning, index) =>
+                  `**${index + 1}.** ${warning.reason}\n` +
+                  `Moderator: <@${warning.moderatorId}> • ` +
+                  `<t:${Math.floor(new Date(warning.timestamp).getTime() / 1000)}:R>`
+              )
+              .join("\n\n")
+          : "This member has no recorded warnings.";
+
+        return privateReply(interaction, {
+          embeds: [
+            makeEmbed(
+              `Warnings for ${user.tag}`,
+              `**Total warnings:** ${warnings.length}\n\n${description}`
+            ),
+          ],
+        });
+      }
+
+      // Timeout
+      if (command === "timeout") {
+        if (!staffOnly(interaction)) return;
+
+        const user = interaction.options.getUser("user");
+        const minutes = interaction.options.getInteger("minutes");
+        const reason = safeReason(
+          interaction.options.getString("reason")
+        );
+
+        const member = await interaction.guild.members
+          .fetch(user.id)
+          .catch(() => null);
+
+        if (!member) {
+          return privateReply(interaction, "That member is not in this server.");
+        }
+
+        if (
+          user.id === interaction.user.id ||
+          user.id === client.user.id
+        ) {
+          return privateReply(
+            interaction,
+            "You cannot timeout yourself or the bot."
+          );
+        }
+
+        if (
+          !interaction.memberPermissions.has(
+            PermissionFlagsBits.Administrator
+          ) &&
+          member.roles.highest.position >=
+            interaction.member.roles.highest.position
+        ) {
+          return privateReply(
+            interaction,
+            "You cannot timeout a member with an equal or higher role."
+          );
+        }
+
+        if (!member.moderatable) {
+          return privateReply(
+            interaction,
+            "I cannot timeout this member. Check my permissions and role hierarchy."
+          );
+        }
+
+        await member.timeout(minutes * 60 * 1000, reason);
+
+        const entry = saveCase(
+          interaction.guild,
+          "TIMEOUT",
+          user.id,
+          interaction.user.id,
+          `${reason} (${minutes} minutes)`
+        );
+
+        await logModeration(
+          interaction.guild,
+          "⏱️ Member timed out",
+          `**Member:** ${user.tag}\n**Duration:** ${minutes} minutes\n**Moderator:** ${interaction.user.tag}\n**Reason:** ${reason}\n**Case:** #${entry.id}`
+        );
+
+        return privateReply(
+          interaction,
+          `${user} has been timed out for ${minutes} minutes. Case #${entry.id}.`
+        );
+      }
+
+      // Kick
+      if (command === "kick") {
+        if (!staffOnly(interaction)) return;
+
+        const user = interaction.options.getUser("user");
+        const reason = safeReason(
+          interaction.options.getString("reason")
+        );
+
+        const member = await interaction.guild.members
+          .fetch(user.id)
+          .catch(() => null);
+
+        if (!member) {
+          return privateReply(interaction, "That member is not in this server.");
+        }
+
+        if (
+          user.id === interaction.user.id ||
+          user.id === client.user.id
+        ) {
+          return privateReply(
+            interaction,
+            "You cannot kick yourself or the bot."
+          );
+        }
+
+        if (
+          !interaction.memberPermissions.has(
+            PermissionFlagsBits.Administrator
+          ) &&
+          member.roles.highest.position >=
+            interaction.member.roles.highest.position
+        ) {
+          return privateReply(
+            interaction,
+            "You cannot kick a member with an equal or higher role."
+          );
+        }
+
+        if (!member.kickable) {
+          return privateReply(
+            interaction,
+            "I cannot kick this member. Check my permissions and role hierarchy."
+          );
+        }
+
+        await member.kick(reason);
+
+        const entry = saveCase(
+          interaction.guild,
+          "KICK",
+          user.id,
+          interaction.user.id,
+          reason
+        );
+
+        await logModeration(
+          interaction.guild,
+          "👢 Member kicked",
+          `**Member:** ${user.tag}\n**Moderator:** ${interaction.user.tag}\n**Reason:** ${reason}\n**Case:** #${entry.id}`
+        );
+
+        return privateReply(
+          interaction,
+          `${user.tag} has been kicked. Case #${entry.id}.`
+        );
+      }
+
+      // Ban
+      if (command === "ban") {
+        if (!staffOnly(interaction)) return;
+
+        const user = interaction.options.getUser("user");
+        const reason = safeReason(
+          interaction.options.getString("reason")
+        );
+
+        if (
+          user.id === interaction.user.id ||
+          user.id === client.user.id
+        ) {
+          return privateReply(
+            interaction,
+            "You cannot ban yourself or the bot."
+          );
+        }
+
+        const member = await interaction.guild.members
+          .fetch(user.id)
+          .catch(() => null);
+
+        if (member) {
+          if (
+            !interaction.memberPermissions.has(
+              PermissionFlagsBits.Administrator
+            ) &&
+            member.roles.highest.position >=
+              interaction.member.roles.highest.position
+          ) {
+            return privateReply(
+              interaction,
+              "You cannot ban a member with an equal or higher role."
+            );
+          }
+
+          if (!member.bannable) {
+            return privateReply(
+              interaction,
+              "I cannot ban this member. Check my permissions and role hierarchy."
+            );
+          }
+        }
+
+        await interaction.guild.members.ban(user.id, {
+          reason,
+        });
+
+        const entry = saveCase(
+          interaction.guild,
+          "BAN",
+          user.id,
+          interaction.user.id,
+          reason
+        );
+
+        await logModeration(
+          interaction.guild,
+          "🔨 Member banned",
+          `**Member:** ${user.tag} (${user.id})\n**Moderator:** ${interaction.user.tag}\n**Reason:** ${reason}\n**Case:** #${entry.id}`,
+          RED
+        );
+
+        return privateReply(
+          interaction,
+          `${user.tag} has been banned. Case #${entry.id}.`
+        );
+      }
+
+      // Purge
+      if (command === "purge") {
+        if (!staffOnly(interaction)) return;
+
+        const amount = interaction.options.getInteger("amount");
+        const channel = interaction.channel;
+
+        if (!channel?.isTextBased() || !channel.messages) {
+          return privateReply(
+            interaction,
+            "This command can only be used in a text channel."
+          );
+        }
+
+        if (!canBot(interaction.guild, [
+          PermissionFlagsBits.ManageMessages,
+        ])) {
+          return privateReply(
+            interaction,
+            "I need the Manage Messages permission."
+          );
+        }
+
+        const deleted = await channel.bulkDelete(amount, true);
+
+        return privateReply(
+          interaction,
+          `Deleted ${deleted.size} recent messages. Messages older than 14 days cannot be bulk-deleted.`
+        );
+      }
+
+      // Slowmode
+      if (command === "slowmode") {
+        if (!staffOnly(interaction)) return;
+
+        const seconds = interaction.options.getInteger("seconds");
+        const channel =
+          interaction.options.getChannel("channel") ||
+          interaction.channel;
+
+        if (
+          !channel ||
+          !channel.isTextBased() ||
+          typeof channel.setRateLimitPerUser !== "function"
+        ) {
+          return privateReply(
+            interaction,
+            "Choose a supported text channel."
+          );
+        }
+
+        if (!canBot(interaction.guild, [
+          PermissionFlagsBits.ManageChannels,
+        ])) {
+          return privateReply(
+            interaction,
+            "I need the Manage Channels permission."
+          );
+        }
+
+        await channel.setRateLimitPerUser(
+          seconds,
+          `Slowmode updated by ${interaction.user.tag}`
+        );
+
+        return privateReply(
+          interaction,
+          seconds === 0
+            ? `Slowmode has been disabled in ${channel}.`
+            : `Slowmode in ${channel} is now ${seconds} seconds.`
+        );
+      }
+
+      // Lock
+      if (command === "lock" || command === "unlock") {
+        if (!staffOnly(interaction)) return;
+
+        const channel =
+          interaction.options.getChannel("channel") ||
+          interaction.channel;
+
+        if (
+          !channel ||
+          !channel.isTextBased() ||
+          !channel.permissionOverwrites
+        ) {
+          return privateReply(
+            interaction,
+            "Choose a supported text channel."
+          );
+        }
+
+        if (!canBot(interaction.guild, [
+          PermissionFlagsBits.ManageChannels,
+        ])) {
+          return privateReply(
+            interaction,
+            "I need the Manage Channels permission."
+          );
+        }
+
+        const everyoneRole = interaction.guild.roles.everyone;
+
+        if (command === "lock") {
+          await channel.permissionOverwrites.edit(everyoneRole, {
+            SendMessages: false,
+            AddReactions: false,
+            SendMessagesInThreads: false,
+          });
+
+          return privateReply(
+            interaction,
+            `🔒 ${channel} has been locked for @everyone.`
+          );
+        }
+
+        await channel.permissionOverwrites.edit(everyoneRole, {
+          SendMessages: null,
+          AddReactions: null,
+          SendMessagesInThreads: null,
+        });
+
+        return privateReply(
+          interaction,
+          `🔓 ${channel} has been unlocked. Previous explicit permission overrides for @everyone may need to be restored manually if they were customised.`
+        );
+      }
+
+      // Purge user
+      if (command === "purgeuser") {
+        if (!staffOnly(interaction)) return;
+
+        const user = interaction.options.getUser("user");
+        const amount = interaction.options.getInteger("amount");
+        const channel = interaction.channel;
+
+        if (!channel?.isTextBased() || !channel.messages) {
+          return privateReply(
+            interaction,
+            "This command can only be used in a text channel."
+          );
+        }
+
+        if (!canBot(interaction.guild, [
+          PermissionFlagsBits.ManageMessages,
+        ])) {
+          return privateReply(
+            interaction,
+            "I need the Manage Messages permission."
+          );
+        }
+
+        await interaction.deferReply({
+          flags: MessageFlags.Ephemeral,
+        });
+
+        const fetched = await channel.messages.fetch({
+          limit: amount,
+        });
+
+        const matching = fetched.filter(
+          (message) =>
+            message.author.id === user.id &&
+            Date.now() - message.createdTimestamp <
+              14 * 24 * 60 * 60 * 1000
+        );
+
+        if (!matching.size) {
+          return interaction.editReply(
+            `No eligible recent messages from ${user} were found in the latest ${amount} messages.`
+          );
+        }
+
+        const deleted = await channel.bulkDelete(matching, true);
+
+        return interaction.editReply(
+          `Deleted ${deleted.size} recent messages from ${user}. Messages older than 14 days cannot be bulk-deleted.`
+        );
+      }
+
+      // Case lookup
+      if (command === "case") {
+        if (!staffOnly(interaction)) return;
+
+        const id = interaction.options.getInteger("id");
+
+        const entry = db.cases.find(
+          (item) =>
+            item.id === id &&
+            item.guildId === interaction.guild.id
+        );
+
+        if (!entry) {
+          return privateReply(
+            interaction,
+            `No case with ID #${id} was found in this server.`
+          );
+        }
+
+        return privateReply(interaction, {
+          embeds: [
+            new EmbedBuilder()
+              .setColor(GREEN)
+              .setTitle(`📁 Moderation Case #${entry.id}`)
+              .addFields(
+                {
+                  name: "Type",
+                  value: entry.type,
+                  inline: true,
+                },
+                {
+                  name: "Member ID",
+                  value: entry.targetId,
+                  inline: true,
+                },
+                {
+                  name: "Moderator",
+                  value: `<@${entry.moderatorId}>`,
+                  inline: true,
+                },
+                {
+                  name: "Reason",
+                  value: truncate(entry.reason, 1024),
+                },
+                {
+                  name: "Date",
+                  value: `<t:${Math.floor(new Date(entry.timestamp).getTime() / 1000)}:F>`,
+                }
+              )
+              .setTimestamp(),
+          ],
+        });
+      }
+
+      return privateReply(
+        interaction,
+        "That command is not recognised. Use `/help` to see the available commands."
+      );
+    }
+  } catch (error) {
+    console.error("Interaction error:", error);
+
+    if (interaction.isRepliable()) {
+      try {
+        await privateReply(interaction, {
+          embeds: [
+            makeEmbed(
+              "Something went wrong",
+              "The command could not be completed. Check the bot's permissions and try again.",
+              RED
+            ),
+          ],
+        });
+      } catch {
+        // The interaction may have expired or already been acknowledged.
+      }
+    }
+  }
+});
+
+// ============================================================
+// READY EVENT
+// ============================================================
+
+client.once("ready", async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Serving ${client.guilds.cache.size} server(s).`);
+
+  await registerCommands();
+});
+
+// ============================================================
+// SAFE ERROR HANDLING
+// ============================================================
+
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled promise rejection:", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+});
+
+// ============================================================
+// START BOT
+// ============================================================
+
+client.login(process.env.DISCORD_TOKEN);
