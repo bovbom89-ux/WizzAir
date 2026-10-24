@@ -1,1959 +1,1625 @@
-require('dotenv').config();
 
-const fs = require('node:fs');
-const path = require('node:path');
+require("dotenv").config();
 
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   Client,
   GatewayIntentBits,
-  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
   ChannelType,
-  MessageFlags,
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  StringSelectMenuBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ContainerBuilder,
-  TextDisplayBuilder,
-  SeparatorBuilder,
-  SeparatorSpacingSize
-} = require('discord.js');
+  EmbedBuilder,
+  AttachmentBuilder,
+} = require("discord.js");
 
-const BRAND = 0xD5008F;
-const PREFIX = 'wizz';
-const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'wizz-support.json');
-const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+// ======================================================
+// GARDEN ADVENTURES BOT
+// Standalone Discord bot
+// ======================================================
 
-const EMOJI = {
-  Wizz: '<:Wizz:1563267915807989860>',
-  Loading: '<:Loading:1563267964067651705>',
-  Graph: '<:Graph:1563268004324843530>',
-  Gear: '<:Gear:1563268046053834903>',
-  Crown: '<:Crown:1563268071752208514>',
-  User: '<:User_Icon:1563268115880611840>',
-  Padlock: '<:Padlock:1563268140979331243>',
-  Hammer: '<:Hammer:1563268164110913646>',
-  Warning: '<:Warning:1563268197942169741>',
-  Shield: '<:Shield:1563268217919639583>',
-  HourGlass: '<:Hour_Glass:1563268252526706749>',
-  Star: '<:Star:1563268275553575142>',
-  Cross: '<:Cross:1563268299163177060>',
-  Tick: '<:Tick:1563268320159866941>',
-  Chat: '<:Chat_Bubble:1563268340875657408>',
-  Headphones: '<:Headphones:1563268362891436042>',
-  Luggage: '<:Luggage:1563268383682728067>',
-  Ticket: '<:Ticket:1563268421506961560>',
-  Clock: '<:Clock:1563268441987616910>',
-  Departure: '<:Departure:1563268463030444215>',
-  Arrival: '<:Arrival:1563268506882015342>'
-};
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID || "";
 
-const LANGUAGES = {
-  en: { name: 'English', flag: '🇬🇧' },
-  fr: { name: 'French', flag: '🇫🇷' },
-  es: { name: 'Spanish', flag: '🇪🇸' },
-  de: { name: 'German', flag: '🇩🇪' },
-  it: { name: 'Italian', flag: '🇮🇹' },
-  pl: { name: 'Polish', flag: '🇵🇱' },
-  ro: { name: 'Romanian', flag: '🇷🇴' },
-  hu: { name: 'Hungarian', flag: '🇭🇺' }
-};
+const GREEN = 0x2E8B57;
+const GOLD = 0xF1C40F;
 
-const TICKET_CATEGORIES = [
-  { label: 'Flight and passenger support', value: 'flight', emoji: '✈️' },
-  { label: 'Staff or management complaint', value: 'staff', emoji: '👥' },
-  { label: 'Report a member', value: 'report', emoji: '🛡️' },
-  { label: 'Technical issue', value: 'technical', emoji: '🛠️' },
-  { label: 'Partnership enquiry', value: 'partnership', emoji: '🤝' },
-  { label: 'Other', value: 'other', emoji: '💬' }
-];
-
-const INFORMATION_TEXT = {
-  server:
-    '# Server Information\n' +
-    'Welcome to Wizz Air Virtual.\n\n' +
-    'This community is for virtual airline operations, flight participation, passenger support and community interaction.\n\n' +
-    '**Getting started**\n' +
-    '• Read the server rules.\n' +
-    '• Check the available information and flight announcements.\n' +
-    '• Follow instructions from authorised staff.\n' +
-    '• Contact support if you need assistance.\n\n' +
-    '**Community standards**\n' +
-    'Treat members respectfully, keep conversations in the appropriate channels and do not impersonate staff.',
-
-  fleet:
-    '# Our Fleet\n' +
-    'Wizz Air operates an Airbus-focused fleet in real-world aviation.\n\n' +
-    '**Aircraft information**\n' +
-    '• Airbus A320 family aircraft are associated with short- and medium-haul operations.\n' +
-    '• Aircraft assignments in Wizz Air Virtual depend on the virtual airline’s current arrangements.\n' +
-    '• Aircraft types, registrations and liveries should be confirmed through official virtual airline announcements.\n\n' +
-    'Virtual aircraft and schedules are for simulation and entertainment. A virtual aircraft assignment does not represent a real airline booking.',
-
-  about:
-    '# About Wizz Air\n' +
-    'Wizz Air is a real low-cost airline founded in 2003. It operates flights across Europe and other markets.\n\n' +
-    '**About this community**\n' +
-    'Wizz Air Virtual is a virtual aviation community. It is not the official Wizz Air airline, does not issue real airline tickets and is not an official customer service channel for the real airline.\n\n' +
-    'For real bookings, baggage rules, refunds or travel documents, use the airline’s official customer service channels.',
-
-  destinations:
-    '# Destinations and Bases\n' +
-    'Virtual routes and bases are announced by the Wizz Air Virtual management team.\n\n' +
-    '**Before a flight**\n' +
-    '• Check the departure and destination in the flight announcement.\n' +
-    '• Confirm the scheduled time and timezone.\n' +
-    '• Read the joining instructions.\n' +
-    '• Check for delays, cancellations or revised details.\n\n' +
-    'Do not assume that a real-world route is available as a virtual flight unless it has been announced by the virtual airline.',
-
-  staff:
-    '# Staff and Departments\n' +
-    'Staff help manage the community, support members and coordinate virtual flights.\n\n' +
-    '**Typical responsibilities**\n' +
-    '• Support staff: answer member questions and handle support tickets.\n' +
-    '• Moderation: help enforce server rules.\n' +
-    '• Flight operations: publish flight information and coordinate operations.\n' +
-    '• Management: oversee the community and its policies.\n\n' +
-    'Staff permissions depend on the roles and permissions configured by server management. Never share passwords, bot tokens or other private credentials.',
-
-  flights:
-    '# Flights and Boarding\n' +
-    'Check the flight announcements for the latest virtual operations.\n\n' +
-    '**Joining a flight**\n' +
-    '1. Find an upcoming flight announcement.\n' +
-    '2. Check its flight number, departure, destination and time.\n' +
-    '3. Select **Join Flight** if you intend to participate.\n' +
-    '4. Follow any crew or boarding instructions.\n\n' +
-    'Joining a virtual flight is not a real airline reservation. Flight times and availability may change. Check the announcement for updates.',
-
-  rules:
-    '# Rules and Expectations\n' +
-    '• Be respectful to all members.\n' +
-    '• Follow Discord’s Terms of Service and Community Guidelines.\n' +
-    '• Do not spam, harass, threaten or deliberately disrupt the community.\n' +
-    '• Do not impersonate staff or claim permissions you do not have.\n' +
-    '• Do not share another member’s private information.\n' +
-    '• Use channels for their intended purposes.\n' +
-    '• Follow authorised staff instructions and published flight procedures.\n\n' +
-    'Staff may take proportionate moderation action for rule violations. Read any additional rules published by the server management team.',
-
-  support:
-    '# Support and ModMail\n' +
-    'Need help? Send a direct message to Wizz Air Support.\n\n' +
-    '**How it works**\n' +
-    '1. Choose your preferred language.\n' +
-    '2. Select a support category.\n' +
-    '3. Describe your issue.\n' +
-    '4. The bot will create a private support channel if the server is configured correctly.\n\n' +
-    'Messages can be translated for staff. Automated translations may be inaccurate, so clarify important details if needed.\n\n' +
-    'Do not send passwords, payment details or other unnecessary sensitive information.',
-
-  roblox:
-    '# Roblox Information\n' +
-    'Wizz Air Virtual supports virtual aviation activities on Roblox where provided by the community.\n\n' +
-    '**Getting ready**\n' +
-    '• Check the published experience and flight instructions.\n' +
-    '• Make sure your Roblox client is working before the scheduled flight.\n' +
-    '• Follow the experience’s rules and authorised staff instructions.\n' +
-    '• Report technical problems through support.\n\n' +
-    'Roblox participation is separate from real-world airline operations. Never share your Roblox password or account recovery codes.'
-};
-
-const DEFAULT_DB = {
-  guilds: {},
-  tickets: {},
-  memberTickets: {},
-  pendingTickets: {},
-  flights: {},
-  warnings: {},
-  moderation: [],
-  polls: {},
-  faq: {},
-  notificationPreferences: {},
-  attendance: {},
-  rewards: {},
-  audit: [],
-  counters: { ticket: 0, flight: 0 },
-  botStartedAt: Date.now()
-};
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+if (!TOKEN || !CLIENT_ID) {
+  console.error("Missing DISCORD_TOKEN or CLIENT_ID in .env");
+  process.exit(1);
 }
-
-function ensureDirectories() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
-}
-
-function loadDatabase() {
-  ensureDirectories();
-
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(DEFAULT_DB, null, 2));
-    return clone(DEFAULT_DB);
-  }
-
-  try {
-    const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    return {
-      ...clone(DEFAULT_DB),
-      ...saved,
-      guilds: saved.guilds || {},
-      tickets: saved.tickets || {},
-      memberTickets: saved.memberTickets || {},
-      pendingTickets: saved.pendingTickets || {},
-      flights: saved.flights || {},
-      warnings: saved.warnings || {},
-      moderation: saved.moderation || [],
-      polls: saved.polls || {},
-      faq: saved.faq || {},
-      notificationPreferences: saved.notificationPreferences || {},
-      attendance: saved.attendance || {},
-      rewards: saved.rewards || {},
-      audit: saved.audit || [],
-      counters: { ...DEFAULT_DB.counters, ...(saved.counters || {}) }
-    };
-  } catch (error) {
-    console.error('Database could not be loaded:', error);
-    throw new Error(
-      `Database file is invalid. Back it up before repairing: ${DATA_FILE}`
-    );
-  }
-}
-
-let db = loadDatabase();
-let saveQueue = Promise.resolve();
-
-function saveDatabase() {
-  saveQueue = saveQueue.then(async () => {
-    ensureDirectories();
-    const tempFile = `${DATA_FILE}.tmp`;
-    fs.writeFileSync(tempFile, JSON.stringify(db, null, 2));
-    fs.renameSync(tempFile, DATA_FILE);
-  }).catch(error => {
-    console.error('Database save failed:', error);
-  });
-
-  return saveQueue;
-}
-
-function addAudit(guildId, action, details = {}) {
-  db.audit.push({
-    guildId,
-    action,
-    details,
-    timestamp: Date.now()
-  });
-
-  if (db.audit.length > 5000) {
-    db.audit.splice(0, db.audit.length - 5000);
-  }
-
-  void saveDatabase();
-}
-
-function guildConfig(guildId) {
-  if (!db.guilds[guildId]) {
-    db.guilds[guildId] = {
-      welcomeChannelId: null,
-      logChannelId: null,
-      announcementChannelId: null,
-      flightChannelId: null,
-      modmailCategoryId: null,
-      modmailStaffRoleId: null,
-      autoModEnabled: true,
-      spamThreshold: 6,
-      spamWindowMs: 8000,
-      timeoutMinutes: 10,
-      timezone: 'UTC',
-      reminderMinutes: [60, 15],
-      reportChannelId: null
-    };
-  }
-
-  return db.guilds[guildId];
-}
-
-function safeText(value, max = 1500) {
-  if (typeof value !== 'string') return '';
-  return value.slice(0, max);
-}
-
-function v2Container(text, rows = []) {
-  const container = new ContainerBuilder()
-    .addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(safeText(text, 3900))
-    );
-
-  if (rows.length) {
-    container.addActionRowComponents(...rows);
-  }
-
-  return container;
-}
-
-function v2Payload(text, options = {}) {
-  const rows = options.rows || [];
-  const payload = {
-    flags: MessageFlags.IsComponentsV2 |
-      (options.ephemeral ? MessageFlags.Ephemeral : 0),
-    components: [v2Container(text, rows)],
-    allowedMentions: { parse: [] }
-  };
-
-  if (options.files) payload.files = options.files;
-  return payload;
-}
-
-async function sendV2(destination, text, options = {}) {
-  return destination.send(v2Payload(text, options));
-}
-
-async function replyV2(interaction, text, options = {}) {
-  const payload = v2Payload(text, {
-    ...options,
-    ephemeral: options.ephemeral !== false
-  });
-
-  try {
-    if (interaction.deferred || interaction.replied) {
-      return await interaction.followUp(payload);
-    }
-    return await interaction.reply(payload);
-  } catch (error) {
-    console.error('Could not reply to interaction:', error);
-    return null;
-  }
-}
-
-async function editV2(interaction, text, options = {}) {
-  return interaction.update(
-    v2Payload(text, { ...options, ephemeral: false })
-  );
-}
-
-function makeButton(label, customId, style = ButtonStyle.Secondary, emoji) {
-  const button = new ButtonBuilder()
-    .setCustomId(customId)
-    .setLabel(label)
-    .setStyle(style);
-
-  if (emoji) button.setEmoji(emoji);
-  return button;
-}
-
-function makeRow(...buttons) {
-  return new ActionRowBuilder().addComponents(...buttons);
-}
-
-function isStaff(member) {
-  if (!member) return false;
-
-  return member.permissions?.has(PermissionFlagsBits.Administrator) ||
-    member.permissions?.has(PermissionFlagsBits.ManageGuild) ||
-    member.permissions?.has(PermissionFlagsBits.ManageMessages) ||
-    member.permissions?.has(PermissionFlagsBits.ModerateMembers);
-}
-
-function isAdmin(member) {
-  return Boolean(
-    member?.permissions?.has(PermissionFlagsBits.Administrator) ||
-    member?.permissions?.has(PermissionFlagsBits.ManageGuild)
-  );
-}
-
-async function sendLog(guild, text) {
-  const config = guildConfig(guild.id);
-  if (!config.logChannelId) return;
-
-  const channel = guild.channels.cache.get(config.logChannelId) ||
-    await guild.channels.fetch(config.logChannelId).catch(() => null);
-
-  if (channel?.isTextBased()) {
-    await sendV2(channel, text).catch(console.error);
-  }
-}
-
-function escapeMarkdown(value) {
-  return String(value || '')
-    .replace(/([\\`*_{}[\]()#+\-.!|>])/g, '\\$1')
-    .slice(0, 1500);
-}
-
-function languageOptions() {
-  return Object.entries(LANGUAGES).map(([value, lang]) => ({
-    label: lang.name,
-    value,
-    emoji: lang.flag
-  }));
-}
-
-function languageSelect() {
-  return new StringSelectMenuBuilder()
-    .setCustomId('modmail:language')
-    .setPlaceholder('Choose your language')
-    .addOptions(languageOptions());
-}
-
-function categorySelect() {
-  return new StringSelectMenuBuilder()
-    .setCustomId('modmail:category')
-    .setPlaceholder('Choose a support category')
-    .addOptions(TICKET_CATEGORIES);
-}
-
-function makeInformationSelect() {
-  return new StringSelectMenuBuilder()
-    .setCustomId('information:select')
-    .setPlaceholder('Choose an information category')
-    .addOptions([
-      { label: 'Server Information', value: 'server', emoji: '🏠' },
-      { label: 'Our Fleet', value: 'fleet', emoji: '✈️' },
-      { label: 'About Wizz Air', value: 'about', emoji: '💜' },
-      { label: 'Destinations & Bases', value: 'destinations', emoji: '🌍' },
-      { label: 'Staff & Departments', value: 'staff', emoji: '👥' },
-      { label: 'Flights & Boarding', value: 'flights', emoji: '🛫' },
-      { label: 'Rules & Expectations', value: 'rules', emoji: '📜' },
-      { label: 'Support & ModMail', value: 'support', emoji: '🎧' },
-      { label: 'Roblox Information', value: 'roblox', emoji: '🎮' }
-    ]);
-}
-
-const LANGUAGE_PAIRS = {
-  en: 'en',
-  fr: 'fr',
-  es: 'es',
-  de: 'de',
-  it: 'it',
-  pl: 'pl',
-  ro: 'ro',
-  hu: 'hu'
-};
-
-function splitUtf8(text, maxBytes = 430) {
-  const words = String(text).split(/(\s+)/);
-  const chunks = [];
-  let current = '';
-
-  for (const word of words) {
-    if (Buffer.byteLength(current + word, 'utf8') <= maxBytes) {
-      current += word;
-      continue;
-    }
-
-    if (current) chunks.push(current);
-    current = '';
-
-    if (Buffer.byteLength(word, 'utf8') <= maxBytes) {
-      current = word;
-      continue;
-    }
-
-    for (const character of word) {
-      if (Buffer.byteLength(current + character, 'utf8') > maxBytes) {
-        if (current) chunks.push(current);
-        current = '';
-      }
-      current += character;
-    }
-  }
-
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-async function translateChunk(text, from, to) {
-  if (from === to || !text.trim()) return text;
-
-  const params = new URLSearchParams({
-    q: text,
-    langpair: `${from}|${to}`,
-    mt: '1'
-  });
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-
-  try {
-    const response = await fetch(
-      `https://api.mymemory.translated.net/get?${params.toString()}`,
-      {
-        method: 'GET',
-        headers: { 'User-Agent': 'WizzAirSupportDiscordBot/1.0' },
-        signal: controller.signal
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Translation service returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (data.responseStatus !== 200 ||
-        !data.responseData?.translatedText) {
-      throw new Error(
-        data.responseDetails || 'Translation was not available'
-      );
-    }
-
-    return String(data.responseData.translatedText)
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function translateText(text, from, to) {
-  if (!LANGUAGE_PAIRS[from] || !LANGUAGE_PAIRS[to]) {
-    throw new Error('Unsupported translation language.');
-  }
-
-  if (from === to) return text;
-
-  const chunks = splitUtf8(text);
-  const translated = [];
-
-  for (const chunk of chunks) {
-    translated.push(
-      await translateChunk(chunk, LANGUAGE_PAIRS[from], LANGUAGE_PAIRS[to])
-    );
-  }
-
-  return translated.join('');
-}
-
-async function translatedOrOriginal(text, from, to) {
-  try {
-    return {
-      text: await translateText(text, from, to),
-      translated: from !== to
-    };
-  } catch (error) {
-    console.warn('Translation failed:', error.message);
-    return { text, translated: false };
-  }
-}
-
-function attachmentList(message) {
-  if (!message.attachments?.size) return '';
-
-  return '\n\n**Attachments**\n' +
-    [...message.attachments.values()]
-      .map(file => `${file.name || 'Attachment'}: ${file.url}`)
-      .join('\n')
-      .slice(0, 1500);
-}
-
-async function openModMail(user) {
-  const existingId = db.memberTickets[user.id];
-  const existing = existingId ? db.tickets[existingId] : null;
-
-  if (existing && existing.status !== 'closed') {
-    await sendV2(
-      user,
-      `You already have an open support ticket: **${existing.id}**.\n` +
-      'Reply to this DM to continue your conversation.'
-    );
-    return;
-  }
-
-  db.pendingTickets[user.id] = {
-    language: 'en',
-    createdAt: Date.now()
-  };
-
-  await saveDatabase();
-
-  await sendV2(
-    user,
-    `${EMOJI.Wizz} **Wizz Air Support — ModMail**\n\n` +
-    'Welcome! Choose your preferred language to begin.\n\n' +
-    'Your messages may be translated for support staff. ' +
-    'Automated translations can be inaccurate.',
-    { rows: [new ActionRowBuilder().addComponents(languageSelect())] }
-  );
-}
-
-async function createTicket(guild, user, pending, description) {
-  const config = guildConfig(guild.id);
-
-  if (!config.modmailCategoryId || !config.modmailStaffRoleId) {
-    throw new Error(
-      'ModMail is not configured. Ask a server administrator to run /modmail-setup.'
-    );
-  }
-
-  const category = guild.channels.cache.get(config.modmailCategoryId) ||
-    await guild.channels.fetch(config.modmailCategoryId).catch(() => null);
-
-  const staffRole = guild.roles.cache.get(config.modmailStaffRoleId) ||
-    await guild.roles.fetch(config.modmailStaffRoleId).catch(() => null);
-
-  if (!category || category.type !== ChannelType.GuildCategory || !staffRole) {
-    throw new Error('The configured ModMail category or staff role is invalid.');
-  }
-
-  const ticketNumber = ++db.counters.ticket;
-  const ticketId = `ticket-${String(ticketNumber).padStart(6, '0')}`;
-
-  const channel = await guild.channels.create({
-    name: ticketId,
-    type: ChannelType.GuildText,
-    parent: category.id,
-    topic: `Wizz Air Support ticket ${ticketId} | Member ID: ${user.id}`,
-    permissionOverwrites: [
-      {
-        id: guild.roles.everyone.id,
-        deny: [PermissionFlagsBits.ViewChannel]
-      },
-      {
-        id: staffRole.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.AttachFiles
-        ]
-      },
-      {
-        id: client.user.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.ManageChannels,
-          PermissionFlagsBits.AttachFiles
-        ]
-      }
-    ]
-  });
-
-  const ticket = {
-    id: ticketId,
-    guildId: guild.id,
-    channelId: channel.id,
-    userId: user.id,
-    username: user.username,
-    language: pending.language || 'en',
-    category: pending.category || 'other',
-    status: 'open',
-    claimedBy: null,
-    createdAt: Date.now(),
-    closedAt: null,
-    messageCount: 0,
-    history: []
-  };
-
-  db.tickets[ticketId] = ticket;
-  db.memberTickets[user.id] = ticketId;
-  delete db.pendingTickets[user.id];
-
-  await saveDatabase();
-
-  await sendV2(
-    channel,
-    `${EMOJI.Ticket} **${ticketId} — Support Ticket**\n\n` +
-    `**Member:** ${user} (\`${user.id}\`)\n` +
-    `**Category:** ${ticket.category}\n` +
-    `**Language:** ${LANGUAGES[ticket.language]?.name || 'English'}\n` +
-    `**Status:** Open\n\n` +
-    '**Initial message — original**\n' +
-    safeText(description, 1800),
-    {
-      rows: [
-        makeRow(
-          makeButton('Claim', `ticket:claim:${ticketId}`, ButtonStyle.Primary),
-          makeButton('Close', `ticket:close:${ticketId}`, ButtonStyle.Danger)
-        )
-      ]
-    }
-  );
-
-  addAudit(guild.id, 'ticket_created', {
-    ticketId,
-    userId: user.id,
-    category: ticket.category
-  });
-
-  await sendV2(
-    user,
-    `${EMOJI.Tick} Your support ticket **${ticketId}** has been created.\n\n` +
-    'Reply to this DM to send messages to the support team. ' +
-    'Keep this conversation open while your issue is being handled.'
-  );
-
-  await sendLog(
-    guild,
-    `**ModMail ticket created**\nTicket: ${ticketId}\nMember: ${user.tag || user.username}`
-  );
-
-  return ticket;
-}
-
-async function findGuildForTicket(ticket) {
-  return client.guilds.cache.get(ticket.guildId) ||
-    await client.guilds.fetch(ticket.guildId).catch(() => null);
-}
-
-async function forwardMemberMessage(message, ticket) {
-  const guild = await findGuildForTicket(ticket);
-  const channel = guild
-    ? guild.channels.cache.get(ticket.channelId) ||
-      await guild.channels.fetch(ticket.channelId).catch(() => null)
-    : null;
-
-  if (!channel || !channel.isTextBased()) {
-    await sendV2(
-      message.author,
-      'Your support channel is currently unavailable. Please contact a server administrator.'
-    );
-    return;
-  }
-
-  const original = safeText(message.content || '(No text content)', 1800);
-  const translated = await translatedOrOriginal(
-    original,
-    ticket.language,
-    'en'
-  );
-
-  const marker = translated.translated
-    ? '\n\n**English translation**\n' + safeText(translated.text, 1800)
-    : '\n\n*Translation unavailable; the original text is shown.*';
-
-  const text =
-    `**Member message — ${escapeMarkdown(message.author.username)}**\n` +
-    `Ticket: \`${ticket.id}\`\n\n` +
-    '**Original message**\n' + original +
-    attachmentList(message) +
-    marker;
-
-  await sendV2(channel, text);
-
-  ticket.messageCount++;
-  ticket.history.push({
-    authorId: message.author.id,
-    direction: 'member_to_staff',
-    content: original,
-    timestamp: Date.now()
-  });
-
-  await saveDatabase();
-}
-
-async function forwardStaffMessage(message, ticket) {
-  if (!ticket || ticket.status === 'closed') return;
-
-  const user = await client.users.fetch(ticket.userId).catch(() => null);
-  if (!user) {
-    await sendV2(message.channel, 'Could not find the ticket member.');
-    return;
-  }
-
-  const original = safeText(message.content || '(No text content)', 1800);
-  const translated = await translatedOrOriginal(
-    original,
-    'en',
-    ticket.language
-  );
-
-  const langName = LANGUAGES[ticket.language]?.name || 'English';
-
-  const body = translated.translated
-    ? `**Support reply (${langName})**\n${safeText(translated.text, 1800)}\n\n` +
-      '*Automated translation — wording may not be exact.*'
-    : `**Support reply**\n${original}\n\n` +
-      '*Translation unavailable; the original reply is shown.*';
-
-  try {
-    await sendV2(
-      user,
-      `${EMOJI.Chat} **Reply from Wizz Air Support**\n` +
-      `Ticket: \`${ticket.id}\`\n\n${body}` +
-      attachmentList(message)
-    );
-
-    ticket.messageCount++;
-    ticket.history.push({
-      authorId: message.author.id,
-      direction: 'staff_to_member',
-      content: original,
-      timestamp: Date.now()
-    });
-
-    await saveDatabase();
-  } catch (error) {
-    await sendV2(
-      message.channel,
-      'The reply could not be delivered. The member may have DMs disabled.'
-    );
-  }
-}
-
-async function closeTicket(ticket, staffUser, reason = 'No reason provided') {
-  ticket.status = 'closed';
-  ticket.closedAt = Date.now();
-  ticket.closedBy = staffUser.id;
-  ticket.closeReason = safeText(reason, 500);
-
-  if (db.memberTickets[ticket.userId] === ticket.id) {
-    delete db.memberTickets[ticket.userId];
-  }
-
-  await saveDatabase();
-
-  const guild = await findGuildForTicket(ticket);
-  const channel = guild
-    ? guild.channels.cache.get(ticket.channelId) ||
-      await guild.channels.fetch(ticket.channelId).catch(() => null)
-    : null;
-
-  if (channel) {
-    await sendV2(
-      channel,
-      `**Ticket closed**\nClosed by: ${staffUser}\nReason: ${ticket.closeReason}`
-    );
-
-    await channel.permissionOverwrites.edit(ticket.userId, {
-      ViewChannel: false
-    }).catch(() => null);
-  }
-
-  const user = await client.users.fetch(ticket.userId).catch(() => null);
-
-  if (user) {
-    await sendV2(
-      user,
-      `Your support ticket **${ticket.id}** has been closed.\n` +
-      `Reason: ${ticket.closeReason}\n\n` +
-      'If you need more help, send the bot a new DM to open another ticket.'
-    ).catch(() => null);
-  }
-
-  if (guild) {
-    await sendLog(guild, `**Ticket closed:** ${ticket.id}\nBy: ${staffUser.tag || staffUser.username}`);
-    addAudit(guild.id, 'ticket_closed', {
-      ticketId: ticket.id,
-      staffId: staffUser.id,
-      reason
-    });
-  }
-}
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName('setup')
-    .setDescription('Configure Wizz Air Support')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption(o => o.setName('welcome-channel').setDescription('Welcome channel').addChannelTypes(ChannelType.GuildText))
-    .addChannelOption(o => o.setName('log-channel').setDescription('Audit log channel').addChannelTypes(ChannelType.GuildText))
-    .addChannelOption(o => o.setName('announcement-channel').setDescription('Announcement channel').addChannelTypes(ChannelType.GuildText))
-    .addChannelOption(o => o.setName('flight-channel').setDescription('Flight announcements channel').addChannelTypes(ChannelType.GuildText))
-    .addStringOption(o => o.setName('timezone').setDescription('Default timezone, e.g. Europe/London')),
-
-  new SlashCommandBuilder()
-    .setName('modmail-setup')
-    .setDescription('Configure ModMail')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption(o => o.setName('category').setDescription('Private ticket category').setRequired(true).addChannelTypes(ChannelType.GuildCategory))
-    .addRoleOption(o => o.setName('staff-role').setDescription('Role that can view support tickets').setRequired(true)),
-
-  new SlashCommandBuilder().setName('information').setDescription('Browse Wizz Air Virtual information'),
-
-  new SlashCommandBuilder().setName('botinfo').setDescription('View bot status and diagnostics'),
-  new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
-
-  new SlashCommandBuilder()
-    .setName('userinfo')
-    .setDescription('View member information')
-    .addUserOption(o => o.setName('user').setDescription('Member to inspect')),
-
-  new SlashCommandBuilder().setName('serverinfo').setDescription('View server information'),
-
-  new SlashCommandBuilder()
-    .setName('avatar')
-    .setDescription('View a member avatar')
-    .addUserOption(o => o.setName('user').setDescription('Member')),
-
-  new SlashCommandBuilder()
-    .setName('poll')
-    .setDescription('Create a two-option poll')
-    .addStringOption(o => o.setName('question').setDescription('Poll question').setRequired(true))
-    .addStringOption(o => o.setName('option-a').setDescription('First option').setRequired(true))
-    .addStringOption(o => o.setName('option-b').setDescription('Second option').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('embed')
-    .setDescription('Publish a Components V2 message')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addStringOption(o => o.setName('title').setDescription('Message heading').setRequired(true))
-    .addStringOption(o => o.setName('message').setDescription('Message body').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('announce')
-    .setDescription('Publish an announcement')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addStringOption(o => o.setName('message').setDescription('Announcement text').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('flight')
-    .setDescription('Publish a virtual flight')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addStringOption(o => o.setName('number').setDescription('Flight number').setRequired(true))
-    .addStringOption(o => o.setName('departure').setDescription('Departure airport').setRequired(true))
-    .addStringOption(o => o.setName('destination').setDescription('Destination airport').setRequired(true))
-    .addStringOption(o => o.setName('departure-time').setDescription('Date/time with timezone, e.g. 2026-11-01T18:30:00Z').setRequired(true))
-    .addStringOption(o => o.setName('instructions').setDescription('Joining instructions')),
-
-  new SlashCommandBuilder().setName('flights').setDescription('List upcoming virtual flights'),
-
-  new SlashCommandBuilder()
-    .setName('warn')
-    .setDescription('Warn a member')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-    .addUserOption(o => o.setName('user').setDescription('Member').setRequired(true))
-    .addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('timeout')
-    .setDescription('Timeout a member')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-    .addUserOption(o => o.setName('user').setDescription('Member').setRequired(true))
-    .addIntegerOption(o => o.setName('minutes').setDescription('Duration in minutes').setRequired(true).setMinValue(1).setMaxValue(40320))
-    .addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('kick')
-    .setDescription('Kick a member')
-    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
-    .addUserOption(o => o.setName('user').setDescription('Member').setRequired(true))
-    .addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('ban')
-    .setDescription('Ban a member')
-    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
-    .addUserOption(o => o.setName('user').setDescription('Member').setRequired(true))
-    .addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('clear')
-    .setDescription('Delete recent messages')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addIntegerOption(o => o.setName('amount').setDescription('Number of messages (1–100)').setRequired(true).setMinValue(1).setMaxValue(100)),
-
-  new SlashCommandBuilder()
-    .setName('modmail-reply')
-    .setDescription('Reply to a ticket member')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addStringOption(o => o.setName('ticket').setDescription('Ticket ID').setRequired(true))
-    .addStringOption(o => o.setName('message').setDescription('Reply text').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('modmail-close')
-    .setDescription('Close a support ticket')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addStringOption(o => o.setName('ticket').setDescription('Ticket ID').setRequired(true))
-    .addStringOption(o => o.setName('reason').setDescription('Closing reason')),
-
-  new SlashCommandBuilder()
-    .setName('modmail-claim')
-    .setDescription('Claim a support ticket')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addStringOption(o => o.setName('ticket').setDescription('Ticket ID').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('modmail-note')
-    .setDescription('Add an internal staff-only note')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .addStringOption(o => o.setName('ticket').setDescription('Ticket ID').setRequired(true))
-    .addStringOption(o => o.setName('note').setDescription('Internal note').setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName('modlogs')
-    .setDescription('Removed command')
-];
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent
   ],
-  partials: [Partials.Channel, Partials.Message, Partials.User]
 });
 
-const spamTracker = new Map();
-const pollVotes = new Map();
+const DATA_FOLDER = path.join(__dirname, "data");
+const DATA_FILE = path.join(DATA_FOLDER, "garden-data.json");
+
+if (!fs.existsSync(DATA_FOLDER)) {
+  fs.mkdirSync(DATA_FOLDER, { recursive: true });
+}
+
+const DEFAULT_DATA = {
+  users: {},
+  warnings: {},
+  tickets: {},
+  events: {},
+  config: {},
+};
+
+function loadData() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      fs.writeFileSync(
+        DATA_FILE,
+        JSON.stringify(DEFAULT_DATA, null, 2)
+      );
+    }
+
+    return {
+      ...structuredClone(DEFAULT_DATA),
+      ...JSON.parse(fs.readFileSync(DATA_FILE, "utf8")),
+    };
+  } catch (error) {
+    console.error("Could not load data:", error);
+    return structuredClone(DEFAULT_DATA);
+  }
+}
+
+let db = loadData();
+
+function saveData() {
+  const temporary = `${DATA_FILE}.tmp`;
+
+  fs.writeFileSync(
+    temporary,
+    JSON.stringify(db, null, 2)
+  );
+
+  fs.renameSync(temporary, DATA_FILE);
+}
+
+function embed(title, description) {
+  return new EmbedBuilder()
+    .setColor(GREEN)
+    .setTitle(title)
+    .setDescription(description)
+    .setTimestamp();
+}
+
+function getProfile(userId) {
+  if (!db.users[userId]) {
+    db.users[userId] = {
+      coins: 100,
+      seeds: {
+        carrot: 2,
+      },
+      garden: [],
+      pets: [],
+      daily: 0,
+    };
+  }
+
+  const profile = db.users[userId];
+
+  profile.coins ??= 100;
+  profile.seeds ??= { carrot: 2 };
+  profile.garden ??= [];
+  profile.pets ??= [];
+  profile.daily ??= 0;
+
+  return profile;
+}
+
+function isStaff(interaction) {
+  return interaction.memberPermissions?.has(
+    PermissionFlagsBits.ModerateMembers
+  ) || interaction.memberPermissions?.has(
+    PermissionFlagsBits.ManageGuild
+  ) || interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+}
+
+function isAdmin(interaction) {
+  return interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
+}
+
+function isTicketStaff(interaction) {
+  const configuredRole =
+    db.config[interaction.guildId]?.staffRoleId;
+
+  if (isStaff(interaction)) return true;
+
+  return Boolean(
+    configuredRole &&
+    interaction.member?.roles?.cache?.has(configuredRole)
+  );
+}
+
+async function replyError(interaction, message) {
+  const payload = {
+    content: message,
+    ephemeral: true,
+  };
+
+  if (interaction.deferred) {
+    return interaction.editReply(payload);
+  }
+
+  if (interaction.replied) {
+    return interaction.followUp(payload);
+  }
+
+  return interaction.reply(payload);
+}
+
+async function sendConfigured(guild, key, messageEmbed) {
+  const channelId = db.config[guild.id]?.[key];
+
+  if (!channelId) return false;
+
+  const channel = await guild.channels.fetch(channelId)
+    .catch(() => null);
+
+  if (!channel?.isTextBased()) return false;
+
+  await channel.send({ embeds: [messageEmbed] });
+  return true;
+}
+
+const SEEDS = {
+  carrot: {
+    price: 10,
+    reward: 20,
+    growSeconds: 60,
+  },
+  strawberry: {
+    price: 25,
+    reward: 50,
+    growSeconds: 120,
+  },
+  sunflower: {
+    price: 50,
+    reward: 100,
+    growSeconds: 180,
+  },
+  pumpkin: {
+    price: 100,
+    reward: 220,
+    growSeconds: 300,
+  },
+};
+
+const PETS = [
+  { name: "Bunny", rarity: "Common", chance: 50 },
+  { name: "Cat", rarity: "Common", chance: 30 },
+  { name: "Fox", rarity: "Rare", chance: 15 },
+  { name: "Golden Bee", rarity: "Legendary", chance: 5 },
+];
+
+function choosePet() {
+  const roll = Math.random() * 100;
+  let total = 0;
+
+  for (const pet of PETS) {
+    total += pet.chance;
+
+    if (roll < total) {
+      return pet;
+    }
+  }
+
+  return PETS[0];
+}
+
+// ======================================================
+// SLASH COMMANDS
+// ======================================================
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("View Garden Adventures commands"),
+
+  new SlashCommandBuilder()
+    .setName("rules")
+    .setDescription("View the community rules"),
+
+  new SlashCommandBuilder()
+    .setName("serverinfo")
+    .setDescription("View server information"),
+
+  new SlashCommandBuilder()
+    .setName("memberinfo")
+    .setDescription("View member information")
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to inspect")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("warn")
+    .setDescription("Warn a member")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ModerateMembers
+    )
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to warn")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("reason")
+        .setDescription("Reason")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("warnings")
+    .setDescription("View member warnings")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ModerateMembers
+    )
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to inspect")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("timeout")
+    .setDescription("Timeout a member")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ModerateMembers
+    )
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to timeout")
+        .setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("minutes")
+        .setDescription("Timeout duration in minutes")
+        .setMinValue(1)
+        .setMaxValue(40320)
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("reason")
+        .setDescription("Reason")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("kick")
+    .setDescription("Kick a member")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.KickMembers
+    )
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to kick")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("reason")
+        .setDescription("Reason")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("ban")
+    .setDescription("Ban a member")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.BanMembers
+    )
+    .addUserOption(o =>
+      o.setName("member")
+        .setDescription("Member to ban")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("reason")
+        .setDescription("Reason")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("purge")
+    .setDescription("Delete recent messages")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageMessages
+    )
+    .addIntegerOption(o =>
+      o.setName("amount")
+        .setDescription("Number of messages to delete")
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("gameupdate")
+    .setDescription("Publish a game update")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addStringOption(o =>
+      o.setName("title")
+        .setDescription("Update title")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("details")
+        .setDescription("Update details")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription("Publish an announcement")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addStringOption(o =>
+      o.setName("title")
+        .setDescription("Announcement title")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("message")
+        .setDescription("Announcement text")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("bugreport")
+    .setDescription("Report a game bug")
+    .addStringOption(o =>
+      o.setName("details")
+        .setDescription("Describe the bug")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("suggest")
+    .setDescription("Suggest a game feature")
+    .addStringOption(o =>
+      o.setName("idea")
+        .setDescription("Describe your idea")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("support")
+    .setDescription("Create a private support ticket"),
+
+  new SlashCommandBuilder()
+    .setName("ticketclaim")
+    .setDescription("Claim the current support ticket"),
+
+  new SlashCommandBuilder()
+    .setName("ticketclose")
+    .setDescription("Close the current support ticket"),
+
+  new SlashCommandBuilder()
+    .setName("event")
+    .setDescription("Manage community events")
+    .addSubcommand(s =>
+      s.setName("create")
+        .setDescription("Create an event")
+        .addStringOption(o =>
+          o.setName("name")
+            .setDescription("Event name")
+            .setRequired(true)
+        )
+        .addStringOption(o =>
+          o.setName("time")
+            .setDescription("Event date and time")
+            .setRequired(true)
+        )
+        .addStringOption(o =>
+          o.setName("details")
+            .setDescription("Event details")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName("list")
+        .setDescription("List community events")
+    )
+    .addSubcommand(s =>
+      s.setName("join")
+        .setDescription("Join an event")
+        .addStringOption(o =>
+          o.setName("id")
+            .setDescription("Event ID")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName("cancel")
+        .setDescription("Cancel an event")
+        .addStringOption(o =>
+          o.setName("id")
+            .setDescription("Event ID")
+            .setRequired(true)
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("config")
+    .setDescription("Configure bot channels and staff role")
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.Administrator
+    )
+    .addSubcommand(s =>
+      s.setName("channel")
+        .setDescription("Set a bot channel")
+        .addStringOption(o =>
+          o.setName("type")
+            .setDescription("Channel purpose")
+            .setRequired(true)
+            .addChoices(
+              { name: "Game updates", value: "updatesChannelId" },
+              { name: "Bug reports", value: "reportsChannelId" },
+              { name: "Suggestions", value: "suggestionsChannelId" },
+              { name: "Welcome messages", value: "welcomeChannelId" },
+              { name: "Moderation logs", value: "logsChannelId" }
+            )
+        )
+        .addChannelOption(o =>
+          o.setName("channel")
+            .setDescription("Channel to use")
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName("staffrole")
+        .setDescription("Set the support staff role")
+        .addRoleOption(o =>
+          o.setName("role")
+            .setDescription("Staff role")
+            .setRequired(true)
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("balance")
+    .setDescription("View your garden coins"),
+
+  new SlashCommandBuilder()
+    .setName("daily")
+    .setDescription("Claim your daily coins"),
+
+  new SlashCommandBuilder()
+    .setName("shop")
+    .setDescription("View seeds and prices"),
+
+  new SlashCommandBuilder()
+    .setName("buy")
+    .setDescription("Buy seeds")
+    .addStringOption(o =>
+      o.setName("seed")
+        .setDescription("Seed to purchase")
+        .setRequired(true)
+        .addChoices(
+          { name: "Carrot", value: "carrot" },
+          { name: "Strawberry", value: "strawberry" },
+          { name: "Sunflower", value: "sunflower" },
+          { name: "Pumpkin", value: "pumpkin" }
+        )
+    )
+    .addIntegerOption(o =>
+      o.setName("amount")
+        .setDescription("Number of seed packets")
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("garden")
+    .setDescription("Manage your garden")
+    .addSubcommand(s =>
+      s.setName("view")
+        .setDescription("View your garden")
+    )
+    .addSubcommand(s =>
+      s.setName("plant")
+        .setDescription("Plant a seed")
+        .addStringOption(o =>
+          o.setName("seed")
+            .setDescription("Seed to plant")
+            .setRequired(true)
+            .addChoices(
+              { name: "Carrot", value: "carrot" },
+              { name: "Strawberry", value: "strawberry" },
+              { name: "Sunflower", value: "sunflower" },
+              { name: "Pumpkin", value: "pumpkin" }
+            )
+        )
+    )
+    .addSubcommand(s =>
+      s.setName("harvest")
+        .setDescription("Harvest a ready crop")
+        .addIntegerOption(o =>
+          o.setName("plot")
+            .setDescription("Plot number")
+            .setMinValue(1)
+            .setRequired(true)
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("sell")
+    .setDescription("Sell harvested crops")
+    .addStringOption(o =>
+      o.setName("crop")
+        .setDescription("Crop to sell")
+        .setRequired(true)
+        .addChoices(
+          { name: "Carrot", value: "carrot" },
+          { name: "Strawberry", value: "strawberry" },
+          { name: "Sunflower", value: "sunflower" },
+          { name: "Pumpkin", value: "pumpkin" }
+        )
+    )
+    .addIntegerOption(o =>
+      o.setName("amount")
+        .setDescription("Number of crops")
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("pets")
+    .setDescription("View your pets"),
+
+  new SlashCommandBuilder()
+    .setName("egg")
+    .setDescription("Buy and hatch a pet egg")
+    .addSubcommand(s =>
+      s.setName("buy")
+        .setDescription("Buy a pet egg for 100 coins")
+        .addIntegerOption(o =>
+          o.setName("amount")
+            .setDescription("Number of eggs")
+            .setMinValue(1)
+            .setMaxValue(10)
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(s =>
+      s.setName("hatch")
+        .setDescription("Hatch one of your eggs")
+    ),
+
+  new SlashCommandBuilder()
+    .setName("leaderboard")
+    .setDescription("View the richest gardeners"),
+
+].map(command => command.toJSON());
+
+// ======================================================
+// REGISTER COMMANDS
+// ======================================================
 
 async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  const body = commands
-    .filter(command => command.name !== 'modlogs')
-    .map(command => command.toJSON());
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
 
-  if (process.env.GUILD_ID) {
-    await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-      { body }
-    );
-  } else {
-    await rest.put(
-      Routes.applicationCommands(process.env.CLIENT_ID),
-      { body }
-    );
-  }
+  const route = GUILD_ID
+    ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID)
+    : Routes.applicationCommands(CLIENT_ID);
 
-  console.log(`Registered ${body.length} slash commands.`);
-}
+  await rest.put(route, { body: commands });
 
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-
-  client.user.setPresence({
-    activities: [{ name: 'Wizz Air Virtual | /information', type: 0 }],
-    status: 'online'
-  });
-
-  try {
-    await registerCommands();
-  } catch (error) {
-    console.error('Command registration failed:', error);
-  }
-
-  await recoverFlights();
-});
-
-async function recoverFlights() {
-  for (const flight of Object.values(db.flights)) {
-    if (flight.status === 'scheduled' && !flight.reminders) {
-      flight.reminders = [];
-    }
-  }
-
-  await saveDatabase();
-}
-
-async function findTicketFromChannel(channelId) {
-  return Object.values(db.tickets).find(
-    ticket => ticket.channelId === channelId
+  console.log(
+    GUILD_ID
+      ? "Garden Adventures commands registered in the server."
+      : "Global commands registered; they may take time to appear."
   );
 }
 
-client.on('interactionCreate', async interaction => {
+// ======================================================
+// BOT READY
+// ======================================================
+
+client.once("ready", () => {
+  console.log(`${client.user.tag} is online.`);
+  client.user.setActivity("Garden Adventures");
+});
+
+// ======================================================
+// WELCOME MESSAGES
+// ======================================================
+
+client.on("guildMemberAdd", async member => {
   try {
-    if (interaction.isChatInputCommand()) {
-      const { commandName } = interaction;
+    await sendConfigured(
+      member.guild,
+      "welcomeChannelId",
+      embed(
+        "Welcome to Garden Adventures",
+        `Welcome, ${member}!\n\nExplore the community, share your ideas and get ready for your gardening adventures.`
+      )
+    );
+  } catch (error) {
+    console.error("Welcome message error:", error);
+  }
+});
 
-      if (commandName === 'setup') {
-        if (!isAdmin(interaction.member)) {
-          return replyV2(interaction, 'You need Manage Server or Administrator permissions.');
-        }
+// ======================================================
+// INTERACTION HANDLER
+// ======================================================
 
-        const config = guildConfig(interaction.guildId);
-        const welcome = interaction.options.getChannel('welcome-channel');
-        const logs = interaction.options.getChannel('log-channel');
-        const announcements = interaction.options.getChannel('announcement-channel');
-        const flights = interaction.options.getChannel('flight-channel');
-        const timezone = interaction.options.getString('timezone');
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
 
-        if (welcome) config.welcomeChannelId = welcome.id;
-        if (logs) config.logChannelId = logs.id;
-        if (announcements) config.announcementChannelId = announcements.id;
-        if (flights) config.flightChannelId = flights.id;
-        if (timezone) config.timezone = timezone;
+  const command = interaction.commandName;
 
-        await saveDatabase();
-        addAudit(interaction.guildId, 'setup_updated', {
-          userId: interaction.user.id
-        });
+  try {
+    // HELP
+    if (command === "help") {
+      return interaction.reply({
+        embeds: [embed(
+          "Garden Adventures Bot",
+          "**Community**\n/help, /rules, /serverinfo, /memberinfo\n\n" +
+          "**Moderation**\n/warn, /warnings, /timeout, /kick, /ban, /purge\n\n" +
+          "**Support**\n/support, /ticketclaim, /ticketclose\n\n" +
+          "**Updates**\n/gameupdate, /announce, /bugreport, /suggest\n\n" +
+          "**Events**\n/event create, /event list, /event join, /event cancel\n\n" +
+          "**Gardening**\n/balance, /daily, /shop, /buy, /garden, /sell\n\n" +
+          "**Pets**\n/pets, /egg buy, /egg hatch\n\n" +
+          "**Administration**\n/config channel, /config staffrole"
+        )],
+        ephemeral: true,
+      });
+    }
 
-        return replyV2(
-          interaction,
-          `${EMOJI.Gear} **Wizz Air Support Setup**\n\n` +
-          `Welcome channel: ${config.welcomeChannelId ? `<#${config.welcomeChannelId}>` : 'Not configured'}\n` +
-          `Log channel: ${config.logChannelId ? `<#${config.logChannelId}>` : 'Not configured'}\n` +
-          `Announcement channel: ${config.announcementChannelId ? `<#${config.announcementChannelId}>` : 'Not configured'}\n` +
-          `Flight channel: ${config.flightChannelId ? `<#${config.flightChannelId}>` : 'Not configured'}\n` +
-          `Timezone: ${config.timezone}\n\n` +
-          'Use `/modmail-setup` to configure private support tickets.'
-        );
-      }
+    // RULES
+    if (command === "rules") {
+      return interaction.reply({
+        embeds: [embed(
+          "Community Rules",
+          "1. Respect everyone.\n" +
+          "2. No harassment, threats or hate.\n" +
+          "3. No spam or disruptive behaviour.\n" +
+          "4. Do not advertise without permission.\n" +
+          "5. Never share private information.\n" +
+          "6. Report bugs honestly.\n" +
+          "7. Follow Discord's Terms of Service.\n" +
+          "8. Follow staff instructions."
+        )],
+      });
+    }
 
-      if (commandName === 'modmail-setup') {
-        if (!isAdmin(interaction.member)) {
-          return replyV2(interaction, 'You need Manage Server or Administrator permissions.');
-        }
+    // SERVER INFO
+    if (command === "serverinfo") {
+      const guild = interaction.guild;
 
-        const category = interaction.options.getChannel('category');
-        const role = interaction.options.getRole('staff-role');
-        const config = guildConfig(interaction.guildId);
-
-        config.modmailCategoryId = category.id;
-        config.modmailStaffRoleId = role.id;
-
-        await saveDatabase();
-
-        return replyV2(
-          interaction,
-          `${EMOJI.Tick} ModMail configured.\n\n` +
-          `Ticket category: ${category}\n` +
-          `Support role: ${role}\n\n` +
-          'Make sure the bot has Manage Channels, View Channels, Send Messages and Read Message History permissions.'
-        );
-      }
-
-      if (commandName === 'information') {
-        return replyV2(
-          interaction,
-          `${EMOJI.Wizz} **Wizz Air Virtual Information**\n\nChoose a category below.`,
-          { rows: [new ActionRowBuilder().addComponents(makeInformationSelect())] }
-        );
-      }
-
-      if (commandName === 'ping') {
-        return replyV2(
-          interaction,
-          `${EMOJI.Clock} **Pong!**\n` +
-          `WebSocket latency: ${client.ws.ping} ms\n` +
-          `Round-trip latency: ${Date.now() - interaction.createdTimestamp} ms`
-        );
-      }
-
-      if (commandName === 'botinfo') {
-        const uptime = Math.floor(client.uptime / 1000);
-        const hours = Math.floor(uptime / 3600);
-        const minutes = Math.floor((uptime % 3600) / 60);
-        const seconds = uptime % 60;
-
-        return replyV2(
-          interaction,
-          `${EMOJI.Wizz} **Wizz Air Support — Diagnostics**\n\n` +
-          `**Version:** 1.0.0\n` +
-          `**Node.js:** ${process.version}\n` +
-          `**Discord.js:** ${require('discord.js').version}\n` +
-          `**Uptime:** ${hours}h ${minutes}m ${seconds}s\n` +
-          `**WebSocket latency:** ${client.ws.ping} ms\n` +
-          `**Guilds:** ${client.guilds.cache.size}\n` +
-          `**Cached users:** ${client.users.cache.size}\n` +
-          `**Open tickets:** ${Object.values(db.tickets).filter(t => t.status === 'open').length}\n` +
-          `**Stored flights:** ${Object.keys(db.flights).length}\n` +
-          `**Database:** ${fs.existsSync(DATA_FILE) ? 'Available' : 'Missing'}\n` +
-          `**Translation:** MyMemory API with fallback enabled`
-        );
-      }
-
-      if (commandName === 'userinfo') {
-        const user = interaction.options.getUser('user') || interaction.user;
-        const member = await interaction.guild.members.fetch(user.id).catch(() => null);
-
-        return replyV2(
-          interaction,
-          `${EMOJI.User} **User Information**\n\n` +
-          `**Username:** ${user.tag || user.username}\n` +
-          `**User ID:** \`${user.id}\`\n` +
-          `**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:F>\n` +
-          `**Server joined:** ${member?.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>` : 'Unknown'}\n` +
-          `**Bot account:** ${user.bot ? 'Yes' : 'No'}`
-        );
-      }
-
-      if (commandName === 'serverinfo') {
-        const guild = interaction.guild;
-        return replyV2(
-          interaction,
-          `${EMOJI.Graph} **Server Information**\n\n` +
-          `**Name:** ${guild.name}\n` +
-          `**Server ID:** \`${guild.id}\`\n` +
+      return interaction.reply({
+        embeds: [embed(
+          guild.name,
           `**Members:** ${guild.memberCount}\n` +
-          `**Channels:** ${guild.channels.cache.size}\n` +
-          `**Roles:** ${guild.roles.cache.size}\n` +
-          `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:F>`
-        );
-      }
-
-      if (commandName === 'avatar') {
-        const user = interaction.options.getUser('user') || interaction.user;
-        return replyV2(
-          interaction,
-          `# Avatar\n${user.displayAvatarURL({ size: 1024, extension: 'png' })}`
-        );
-      }
-
-      if (commandName === 'announce' || commandName === 'embed') {
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You do not have permission to publish messages.');
-        }
-
-        const config = guildConfig(interaction.guildId);
-        const channelId = config.announcementChannelId;
-        const channel = channelId
-          ? interaction.guild.channels.cache.get(channelId) ||
-            await interaction.guild.channels.fetch(channelId).catch(() => null)
-          : null;
-
-        if (!channel?.isTextBased()) {
-          return replyV2(interaction, 'Set an announcement channel first using `/setup`.');
-        }
-
-        let content;
-
-        if (commandName === 'announce') {
-          content = `${EMOJI.Wizz} **Wizz Air Virtual — Announcement**\n\n` +
-            safeText(interaction.options.getString('message'), 3000) +
-            `\n\n-# Published by ${escapeMarkdown(interaction.user.username)}`;
-        } else {
-          content = `# ${safeText(interaction.options.getString('title'), 200)}\n\n` +
-            safeText(interaction.options.getString('message'), 3000);
-        }
-
-        await sendV2(channel, content);
-        addAudit(interaction.guildId, `${commandName}_published`, {
-          userId: interaction.user.id,
-          channelId: channel.id
-        });
-
-        return replyV2(interaction, `Published successfully in ${channel}.`);
-      }
-
-      if (commandName === 'flight') {
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You do not have permission to publish flights.');
-        }
-
-        const config = guildConfig(interaction.guildId);
-        const channelId = config.flightChannelId || config.announcementChannelId;
-        const channel = channelId
-          ? interaction.guild.channels.cache.get(channelId) ||
-            await interaction.guild.channels.fetch(channelId).catch(() => null)
-          : null;
-
-        if (!channel?.isTextBased()) {
-          return replyV2(interaction, 'Set a flight channel using `/setup` first.');
-        }
-
-        const number = interaction.options.getString('number');
-        const departure = interaction.options.getString('departure');
-        const destination = interaction.options.getString('destination');
-        const departureTime = interaction.options.getString('departure-time');
-        const instructions = interaction.options.getString('instructions') || 'Follow the instructions provided by flight staff.';
-
-        const departureTimestamp = Date.parse(departureTime);
-        if (!Number.isFinite(departureTimestamp) || departureTimestamp <= Date.now()) {
-          return replyV2(
-            interaction,
-            'The departure time must be a valid future date and time. Include a timezone, for example `2026-11-01T18:30:00Z`.'
-          );
-        }
-
-        const flightId = `${PREFIX}-${++db.counters.flight}`;
-        const flight = {
-          id: flightId,
-          guildId: interaction.guildId,
-          number,
-          departure,
-          destination,
-          departureTimestamp,
-          instructions,
-          status: 'scheduled',
-          passengers: [],
-          reminders: [],
-          createdBy: interaction.user.id,
-          createdAt: Date.now(),
-          messageId: null,
-          channelId: channel.id
-        };
-
-        db.flights[flightId] = flight;
-        await saveDatabase();
-
-        const row = makeRow(
-          makeButton('Join Flight (0)', `flight:join:${flightId}`, ButtonStyle.Primary, EMOJI.Ticket),
-          makeButton('Flight Details', `flight:details:${flightId}`, ButtonStyle.Secondary)
-        );
-
-        const message = await sendV2(
-          channel,
-          `${EMOJI.Departure} **Wizz Air Virtual — Flight Announcement**\n\n` +
-          `**Flight:** ${escapeMarkdown(number)}\n` +
-          `**Departure:** ${escapeMarkdown(departure)}\n` +
-          `**Destination:** ${escapeMarkdown(destination)}\n` +
-          `**Departure time:** <t:${Math.floor(departureTimestamp / 1000)}:F>\n` +
-          `**Countdown:** <t:${Math.floor(departureTimestamp / 1000)}:R>\n` +
-          `**Passengers joined:** 0\n` +
-          `**Status:** Scheduled\n\n` +
-          `**Instructions**\n${safeText(instructions, 1200)}\n\n` +
-          '-# Join the flight below if you intend to participate.',
-          { rows: [row] }
-        );
-
-        flight.messageId = message.id;
-        await saveDatabase();
-
-        addAudit(interaction.guildId, 'flight_published', {
-          flightId,
-          userId: interaction.user.id
-        });
-
-        return replyV2(interaction, `Flight **${number}** published in ${channel}.`);
-      }
-
-      if (commandName === 'flights') {
-        const flights = Object.values(db.flights)
-          .filter(f => f.guildId === interaction.guildId &&
-            f.status === 'scheduled' &&
-            f.departureTimestamp > Date.now())
-          .sort((a, b) => a.departureTimestamp - b.departureTimestamp)
-          .slice(0, 15);
-
-        if (!flights.length) {
-          return replyV2(interaction, 'There are no upcoming scheduled flights at the moment.');
-        }
-
-        const text = flights.map(f =>
-          `**${escapeMarkdown(f.number)}** — ${escapeMarkdown(f.departure)} → ${escapeMarkdown(f.destination)}\n` +
-          `<t:${Math.floor(f.departureTimestamp / 1000)}:F> · <t:${Math.floor(f.departureTimestamp / 1000)}:R>\n` +
-          `Passengers: ${f.passengers.length} · Status: ${f.status}`
-        ).join('\n\n');
-
-        return replyV2(interaction, `# Upcoming Flights\n\n${text}`);
-      }
-
-      if (commandName === 'poll') {
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You do not have permission to create polls.');
-        }
-
-        const question = interaction.options.getString('question');
-        const optionA = interaction.options.getString('option-a');
-        const optionB = interaction.options.getString('option-b');
-        const pollId = `poll-${Date.now()}`;
-
-        db.polls[pollId] = {
-          guildId: interaction.guildId,
-          question,
-          optionA,
-          optionB,
-          votes: { a: [], b: [] },
-          createdAt: Date.now()
-        };
-
-        await saveDatabase();
-
-        const row = makeRow(
-          makeButton(optionA, `poll:${pollId}:a`, ButtonStyle.Primary),
-          makeButton(optionB, `poll:${pollId}:b`, ButtonStyle.Secondary)
-        );
-
-        await sendV2(
-          interaction.channel,
-          `# 📊 ${safeText(question, 250)}\n\n` +
-          `Choose an option below.\n\n` +
-          `**${safeText(optionA, 80)}:** 0 votes\n` +
-          `**${safeText(optionB, 80)}:** 0 votes`,
-          { rows: [row] }
-        );
-
-        return replyV2(interaction, 'Poll published.');
-      }
-
-      if (commandName === 'warn' || commandName === 'timeout' ||
-          commandName === 'kick' || commandName === 'ban') {
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You do not have permission to use this moderation command.');
-        }
-
-        const user = interaction.options.getUser('user');
-        const reason = interaction.options.getString('reason');
-        const member = await interaction.guild.members.fetch(user.id).catch(() => null);
-
-        if (!member) {
-          return replyV2(interaction, 'That member is not in this server.');
-        }
-
-        if (user.id === interaction.user.id || user.id === client.user.id) {
-          return replyV2(interaction, 'You cannot use this command on yourself or the bot.');
-        }
-
-        if (member.roles.highest.position >= interaction.member.roles.highest.position &&
-            interaction.guild.ownerId !== interaction.user.id) {
-          return replyV2(interaction, 'You cannot moderate a member with an equal or higher role.');
-        }
-
-        if (commandName === 'warn') {
-          db.warnings[user.id] ||= [];
-          db.warnings[user.id].push({
-            guildId: interaction.guildId,
-            moderatorId: interaction.user.id,
-            reason,
-            timestamp: Date.now()
-          });
-        } else if (commandName === 'timeout') {
-          const minutes = interaction.options.getInteger('minutes');
-          await member.timeout(minutes * 60 * 1000, reason);
-        } else if (commandName === 'kick') {
-          if (!member.kickable) {
-            return replyV2(interaction, 'I cannot kick this member. Check role hierarchy and bot permissions.');
-          }
-          await member.kick(reason);
-        } else if (commandName === 'ban') {
-          if (!member.bannable) {
-            return replyV2(interaction, 'I cannot ban this member. Check role hierarchy and bot permissions.');
-          }
-          await member.ban({ reason });
-        }
-
-        db.moderation.push({
-          guildId: interaction.guildId,
-          action: commandName,
-          targetId: user.id,
-          moderatorId: interaction.user.id,
-          reason,
-          timestamp: Date.now()
-        });
-
-        await saveDatabase();
-        addAudit(interaction.guildId, `moderation_${commandName}`, {
-          targetId: user.id,
-          moderatorId: interaction.user.id,
-          reason
-        });
-
-        await sendLog(
-          interaction.guild,
-          `**Moderation action: ${commandName}**\nMember: ${user.tag || user.username}\nModerator: ${interaction.user.tag || interaction.user.username}\nReason: ${reason}`
-        );
-
-        return replyV2(
-          interaction,
-          `${EMOJI.Tick} **${commandName.toUpperCase()} recorded**\n` +
-          `Member: ${user}\nReason: ${safeText(reason, 500)}`
-        );
-      }
-
-      if (commandName === 'clear') {
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You do not have permission to clear messages.');
-        }
-
-        const amount = interaction.options.getInteger('amount');
-        const messages = await interaction.channel.bulkDelete(amount, true);
-
-        return replyV2(
-          interaction,
-          `Deleted ${messages.size} messages. Discord does not allow bulk deletion of messages older than 14 days.`
-        );
-      }
-
-      if (commandName.startsWith('modmail-')) {
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You need support staff permissions to manage tickets.');
-        }
-
-        const ticketId = interaction.options.getString('ticket');
-        const ticket = db.tickets[ticketId];
-
-        if (!ticket) {
-          return replyV2(interaction, 'Ticket not found. Check the ticket ID.');
-        }
-
-        if (commandName === 'modmail-reply') {
-          if (ticket.status === 'closed') {
-            return replyV2(interaction, 'This ticket is closed.');
-          }
-
-          const message = interaction.options.getString('message');
-          const user = await client.users.fetch(ticket.userId).catch(() => null);
-
-          if (!user) return replyV2(interaction, 'Could not find the ticket member.');
-
-          const translated = await translatedOrOriginal(message, 'en', ticket.language);
-
-          await sendV2(
-            user,
-            `**Reply from Wizz Air Support**\nTicket: \`${ticket.id}\`\n\n` +
-            (translated.translated
-              ? `${safeText(translated.text, 1800)}\n\n*Automated translation; wording may not be exact.*`
-              : `${safeText(message, 1800)}\n\n*Translation unavailable; original reply shown.*`)
-          );
-
-          ticket.messageCount++;
-          ticket.history.push({
-            authorId: interaction.user.id,
-            direction: 'staff_to_member',
-            content: message,
-            timestamp: Date.now()
-          });
-
-          await saveDatabase();
-          return replyV2(interaction, `Reply sent to ${user}.`);
-        }
-
-        if (commandName === 'modmail-close') {
-          const reason = interaction.options.getString('reason') || 'No reason provided';
-          await closeTicket(ticket, interaction.user, reason);
-          return replyV2(interaction, `Ticket ${ticket.id} closed.`);
-        }
-
-        if (commandName === 'modmail-claim') {
-          if (ticket.status === 'closed') {
-            return replyV2(interaction, 'This ticket is closed.');
-          }
-
-          ticket.claimedBy = interaction.user.id;
-          await saveDatabase();
-
-          const guild = await findGuildForTicket(ticket);
-          const channel = guild?.channels.cache.get(ticket.channelId);
-
-          if (channel) {
-            await sendV2(channel, `Ticket claimed by ${interaction.user}.`);
-          }
-
-          return replyV2(interaction, `You claimed ticket ${ticket.id}.`);
-        }
-
-        if (commandName === 'modmail-note') {
-          const note = interaction.options.getString('note');
-          const guild = await findGuildForTicket(ticket);
-          const channel = guild?.channels.cache.get(ticket.channelId);
-
-          if (channel) {
-            await sendV2(
-              channel,
-              `**Internal staff note — not sent to the member**\n` +
-              `Author: ${interaction.user}\n${safeText(note, 1500)}`
-            );
-          }
-
-          ticket.history.push({
-            authorId: interaction.user.id,
-            direction: 'internal_note',
-            content: note,
-            timestamp: Date.now()
-          });
-
-          await saveDatabase();
-          return replyV2(interaction, 'Internal note added.');
-        }
-      }
-
-      return replyV2(interaction, 'Unknown command.');
+          `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>\n` +
+          `**Server ID:** ${guild.id}`
+        ).setThumbnail(guild.iconURL())],
+      });
     }
 
-    if (interaction.isStringSelectMenu()) {
-      if (interaction.customId === 'information:select') {
-        const key = interaction.values[0];
-        return editV2(
-          interaction,
-          `${EMOJI.Wizz} **Wizz Air Virtual Information**\n\n${INFORMATION_TEXT[key] || 'Information unavailable.'}`,
-          {
-            rows: [
-              new ActionRowBuilder().addComponents(makeInformationSelect())
-            ]
-          }
-        );
-      }
+    // MEMBER INFO
+    if (command === "memberinfo") {
+      const user = interaction.options.getUser("member");
+      const member = await interaction.guild.members.fetch(user.id)
+        .catch(() => null);
 
-      if (interaction.customId === 'modmail:language') {
-        const pending = db.pendingTickets[interaction.user.id];
-        if (!pending) {
-          return replyV2(interaction, 'Your ModMail session expired. Send the bot a DM to start again.');
-        }
-
-        pending.language = interaction.values[0];
-        await saveDatabase();
-
-        return editV2(
-          interaction,
-          `Language selected: **${LANGUAGES[pending.language].name}**.\n\nNow choose the support category.`,
-          { rows: [new ActionRowBuilder().addComponents(categorySelect())] }
-        );
-      }
-
-      if (interaction.customId === 'modmail:category') {
-        const pending = db.pendingTickets[interaction.user.id];
-        if (!pending) {
-          return replyV2(interaction, 'Your ModMail session expired. Send the bot a DM to start again.');
-        }
-
-        pending.category = interaction.values[0];
-        await saveDatabase();
-
-        const modal = new ModalBuilder()
-          .setCustomId('modmail:description')
-          .setTitle('Describe your issue');
-
-        const description = new TextInputBuilder()
-          .setCustomId('description')
-          .setLabel('How can our support team help?')
-          .setPlaceholder('Explain what happened and what help you need.')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true)
-          .setMaxLength(1800);
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(description)
-        );
-
-        return interaction.showModal(modal);
-      }
+      return interaction.reply({
+        embeds: [embed(
+          "Member Information",
+          `**Username:** ${user.tag}\n` +
+          `**ID:** ${user.id}\n` +
+          `**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:D>\n` +
+          `**Joined server:** ${member?.joinedTimestamp
+            ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:D>`
+            : "Unknown"}`
+        )],
+        ephemeral: true,
+      });
     }
 
-    if (interaction.isModalSubmit() &&
-        interaction.customId === 'modmail:description') {
-      const pending = db.pendingTickets[interaction.user.id];
-
-      if (!pending) {
-        return replyV2(interaction, 'Your ModMail session expired. Send the bot a DM to start again.');
+    // WARN
+    if (command === "warn") {
+      if (!isStaff(interaction)) {
+        return replyError(interaction, "You do not have permission.");
       }
 
-      await interaction.reply({
-        flags: MessageFlags.Ephemeral,
-        content: 'Creating your support ticket...'
+      const user = interaction.options.getUser("member");
+      const reason = interaction.options.getString("reason");
+
+      if (user.id === interaction.user.id || user.bot) {
+        return replyError(interaction, "You cannot warn yourself or a bot.");
+      }
+
+      if (!db.warnings[user.id]) db.warnings[user.id] = [];
+
+      db.warnings[user.id].push({
+        reason,
+        moderator: interaction.user.id,
+        date: Date.now(),
+        guildId: interaction.guildId,
       });
 
-      const guild = client.guilds.cache.get(process.env.GUILD_ID) ||
-        client.guilds.cache.first();
+      saveData();
 
-      if (!guild) {
-        delete db.pendingTickets[interaction.user.id];
-        await saveDatabase();
-        return interaction.editReply('The support server is unavailable. Please try again later.');
-      }
+      await user.send({
+        embeds: [embed(
+          "Community Warning",
+          `You received a warning in **${interaction.guild.name}**.\n**Reason:** ${reason}`
+        )],
+      }).catch(() => null);
 
-      const description = interaction.fields.getTextInputValue('description');
-
-      try {
-        await createTicket(guild, interaction.user, pending, description);
-        return interaction.editReply('Your support ticket has been created. Check your DMs.');
-      } catch (error) {
-        console.error('Ticket creation failed:', error);
-        return interaction.editReply(
-          `Could not create your ticket: ${safeText(error.message, 500)}`
-        );
-      }
-    }
-
-    if (interaction.isButton()) {
-      const parts = interaction.customId.split(':');
-
-      if (parts[0] === 'flight' && parts[1] === 'join') {
-        const flight = db.flights[parts[2]];
-
-        if (!flight || flight.status !== 'scheduled') {
-          return replyV2(interaction, 'This flight is no longer accepting joins.');
-        }
-
-        if (flight.departureTimestamp <= Date.now()) {
-          return replyV2(interaction, 'This flight has already reached its departure time.');
-        }
-
-        if (flight.passengers.includes(interaction.user.id)) {
-          return replyV2(interaction, 'You have already joined this flight.');
-        }
-
-        flight.passengers.push(interaction.user.id);
-        await saveDatabase();
-
-        const guild = await client.guilds.fetch(flight.guildId).catch(() => null);
-        const channel = guild?.channels.cache.get(flight.channelId);
-
-        if (channel && flight.messageId) {
-          const message = await channel.messages.fetch(flight.messageId).catch(() => null);
-
-          if (message) {
-            const row = makeRow(
-              makeButton(
-                `Join Flight (${flight.passengers.length})`,
-                `flight:join:${flight.id}`,
-                ButtonStyle.Primary,
-                EMOJI.Ticket
-              ),
-              makeButton('Flight Details', `flight:details:${flight.id}`, ButtonStyle.Secondary)
-            );
-
-            const newText =
-              `${EMOJI.Departure} **Wizz Air Virtual — Flight Announcement**\n\n` +
-              `**Flight:** ${escapeMarkdown(flight.number)}\n` +
-              `**Departure:** ${escapeMarkdown(flight.departure)}\n` +
-              `**Destination:** ${escapeMarkdown(flight.destination)}\n` +
-              `**Departure time:** <t:${Math.floor(flight.departureTimestamp / 1000)}:F>\n` +
-              `**Countdown:** <t:${Math.floor(flight.departureTimestamp / 1000)}:R>\n` +
-              `**Passengers joined:** ${flight.passengers.length}\n` +
-              `**Status:** ${flight.status}\n\n` +
-              `**Instructions**\n${safeText(flight.instructions, 1200)}\n\n` +
-              '-# Join the flight below if you intend to participate.';
-
-            await message.edit(v2Payload(newText, { rows: [row] })).catch(console.error);
-          }
-        }
-
-        addAudit(flight.guildId, 'flight_joined', {
-          flightId: flight.id,
-          userId: interaction.user.id
-        });
-
-        return replyV2(
-          interaction,
-          `${EMOJI.Tick} You have joined flight **${flight.number}**.\n` +
-          `Passengers currently joined: ${flight.passengers.length}`
-        );
-      }
-
-      if (parts[0] === 'flight' && parts[1] === 'details') {
-        const flight = db.flights[parts[2]];
-
-        if (!flight) return replyV2(interaction, 'Flight not found.');
-
-        return replyV2(
-          interaction,
-          `# Flight Details\n\n` +
-          `**Flight:** ${flight.number}\n` +
-          `**Route:** ${flight.departure} → ${flight.destination}\n` +
-          `**Departure:** <t:${Math.floor(flight.departureTimestamp / 1000)}:F>\n` +
-          `**Countdown:** <t:${Math.floor(flight.departureTimestamp / 1000)}:R>\n` +
-          `**Passengers joined:** ${flight.passengers.length}\n` +
-          `**Status:** ${flight.status}\n\n` +
-          `**Instructions**\n${safeText(flight.instructions, 1500)}`
-        );
-      }
-
-      if (parts[0] === 'poll') {
-        const pollId = parts[1];
-        const choice = parts[2];
-        const poll = db.polls[pollId];
-
-        if (!poll) return replyV2(interaction, 'This poll is no longer available.');
-
-        poll.votes.a = poll.votes.a.filter(id => id !== interaction.user.id);
-        poll.votes.b = poll.votes.b.filter(id => id !== interaction.user.id);
-        poll.votes[choice].push(interaction.user.id);
-
-        await saveDatabase();
-
-        return replyV2(
-          interaction,
-          `Your vote has been recorded.\n\n` +
-          `**${poll.optionA}:** ${poll.votes.a.length}\n` +
-          `**${poll.optionB}:** ${poll.votes.b.length}`
-        );
-      }
-
-      if (parts[0] === 'ticket') {
-        const ticket = db.tickets[parts[2]];
-
-        if (!ticket) return replyV2(interaction, 'Ticket not found.');
-        if (!isStaff(interaction.member)) {
-          return replyV2(interaction, 'You do not have permission to manage this ticket.');
-        }
-
-        if (parts[1] === 'claim') {
-          if (ticket.status === 'closed') {
-            return replyV2(interaction, 'This ticket is closed.');
-          }
-
-          ticket.claimedBy = interaction.user.id;
-          await saveDatabase();
-          await sendV2(interaction.channel, `Ticket claimed by ${interaction.user}.`);
-
-          return replyV2(interaction, `You claimed ${ticket.id}.`);
-        }
-
-        if (parts[1] === 'close') {
-          await closeTicket(ticket, interaction.user, 'Closed using the ticket controls.');
-          return replyV2(interaction, `Ticket ${ticket.id} closed.`);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Interaction handler error:', error);
-
-    if (interaction.isRepliable()) {
-      await replyV2(
-        interaction,
-        'Something went wrong while processing that action. Check the bot logs or try again.'
+      await sendConfigured(
+        interaction.guild,
+        "logsChannelId",
+        embed(
+          "Member Warned",
+          `**Member:** ${user.tag}\n**Moderator:** ${interaction.user.tag}\n**Reason:** ${reason}`
+        )
       ).catch(() => null);
+
+      return interaction.reply({
+        embeds: [embed("Warning Recorded", `${user} has been warned.\n**Reason:** ${reason}`)],
+        ephemeral: true,
+      });
     }
-  }
-});
 
-client.on('messageCreate', async message => {
-  if (message.author.bot) return;
-
-  try {
-    if (!message.guild) {
-      const ticketId = db.memberTickets[message.author.id];
-      const ticket = ticketId ? db.tickets[ticketId] : null;
-
-      if (ticket && ticket.status !== 'closed') {
-        await forwardMemberMessage(message, ticket);
-      } else {
-        await openModMail(message.author);
+    // WARNINGS
+    if (command === "warnings") {
+      if (!isStaff(interaction)) {
+        return replyError(interaction, "You do not have permission.");
       }
 
-      return;
+      const user = interaction.options.getUser("member");
+      const warnings = (db.warnings[user.id] || [])
+        .filter(w => w.guildId === interaction.guildId);
+
+      const description = warnings.length
+        ? warnings.map((w, i) =>
+          `**${i + 1}.** ${w.reason}\nModerator: <@${w.moderator}> | <t:${Math.floor(w.date / 1000)}:d>`
+        ).join("\n\n")
+        : "No warnings recorded for this member in this server.";
+
+      return interaction.reply({
+        embeds: [embed(`Warnings: ${user.tag}`, description)],
+        ephemeral: true,
+      });
     }
 
-    const config = guildConfig(message.guild.id);
+    // TIMEOUT
+    if (command === "timeout") {
+      if (!interaction.memberPermissions.has(
+        PermissionFlagsBits.ModerateMembers
+      )) {
+        return replyError(interaction, "You need the Moderate Members permission.");
+      }
 
-    if (config.autoModEnabled && !isStaff(message.member)) {
-      const now = Date.now();
-      const key = `${message.guild.id}:${message.author.id}`;
-      const recent = (spamTracker.get(key) || [])
-        .filter(timestamp => now - timestamp < config.spamWindowMs);
+      const user = interaction.options.getUser("member");
+      const minutes = interaction.options.getInteger("minutes");
+      const reason = interaction.options.getString("reason");
 
-      recent.push(now);
-      spamTracker.set(key, recent);
+      if (user.id === interaction.user.id) {
+        return replyError(interaction, "You cannot timeout yourself.");
+      }
 
-      const excessiveMentions = message.mentions.users.size > 5 ||
-        message.mentions.roles.size > 5;
+      const member = await interaction.guild.members.fetch(user.id)
+        .catch(() => null);
 
-      const repeatedContent = recent.length >= config.spamThreshold &&
-        message.content.length > 0;
+      if (!member?.moderatable) {
+        return replyError(interaction, "I cannot timeout that member. Check my permissions and role position.");
+      }
 
-      if (excessiveMentions || repeatedContent) {
-        await message.delete().catch(() => null);
+      await member.timeout(minutes * 60000, reason);
 
-        const member = message.member;
-        if (member?.moderatable) {
-          await member.timeout(
-            config.timeoutMinutes * 60 * 1000,
-            'Automatic anti-spam moderation'
-          ).catch(() => null);
+      return interaction.reply({
+        embeds: [embed(
+          "Member Timed Out",
+          `**Member:** ${user.tag}\n**Duration:** ${minutes} minutes\n**Reason:** ${reason}`
+        )],
+        ephemeral: true,
+      });
+    }
+
+    // KICK
+    if (command === "kick") {
+      if (!interaction.memberPermissions.has(PermissionFlagsBits.KickMembers)) {
+        return replyError(interaction, "You need the Kick Members permission.");
+      }
+
+      const user = interaction.options.getUser("member");
+      const reason = interaction.options.getString("reason");
+
+      const member = await interaction.guild.members.fetch(user.id)
+        .catch(() => null);
+
+      if (user.id === interaction.user.id || user.id === client.user.id) {
+        return replyError(interaction, "You cannot kick yourself or the bot.");
+      }
+
+      if (!member?.kickable) {
+        return replyError(interaction, "I cannot kick that member.");
+      }
+
+      await member.kick(reason);
+
+      return interaction.reply({
+        embeds: [embed("Member Kicked", `**Member:** ${user.tag}\n**Reason:** ${reason}`)],
+        ephemeral: true,
+      });
+    }
+
+    // BAN
+    if (command === "ban") {
+      if (!interaction.memberPermissions.has(PermissionFlagsBits.BanMembers)) {
+        return replyError(interaction, "You need the Ban Members permission.");
+      }
+
+      const user = interaction.options.getUser("member");
+      const reason = interaction.options.getString("reason");
+
+      if (user.id === interaction.user.id || user.id === client.user.id) {
+        return replyError(interaction, "You cannot ban yourself or the bot.");
+      }
+
+      const member = await interaction.guild.members.fetch(user.id)
+        .catch(() => null);
+
+      if (member && !member.bannable) {
+        return replyError(interaction, "I cannot ban that member.");
+      }
+
+      await interaction.guild.members.ban(user.id, { reason });
+
+      return interaction.reply({
+        embeds: [embed("Member Banned", `**Member:** ${user.tag}\n**Reason:** ${reason}`)],
+        ephemeral: true,
+      });
+    }
+
+    // PURGE
+    if (command === "purge") {
+      if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageMessages)) {
+        return replyError(interaction, "You need the Manage Messages permission.");
+      }
+
+      const amount = interaction.options.getInteger("amount");
+
+      if (!interaction.channel?.isTextBased() ||
+          !("bulkDelete" in interaction.channel)) {
+        return replyError(interaction, "This command cannot be used here.");
+      }
+
+      const deleted = await interaction.channel.bulkDelete(amount, true);
+
+      return interaction.reply({
+        content: `Deleted ${deleted.size} recent messages. Messages older than 14 days cannot be bulk-deleted.`,
+        ephemeral: true,
+      });
+    }
+
+    // GAME UPDATE AND ANNOUNCEMENT
+    if (command === "gameupdate" || command === "announce") {
+      if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
+        return replyError(interaction, "You need the Manage Server permission.");
+      }
+
+      const title = interaction.options.getString("title");
+      const message = interaction.options.getString(
+        command === "gameupdate" ? "details" : "message"
+      );
+
+      const key = command === "gameupdate"
+        ? "updatesChannelId"
+        : "updatesChannelId";
+
+      const sent = await sendConfigured(
+        interaction.guild,
+        key,
+        embed(title, message).setFooter({
+          text: `Published by ${interaction.user.tag}`,
+        })
+      );
+
+      if (!sent) {
+        return replyError(interaction, "Configure the updates channel using /config channel first.");
+      }
+
+      return interaction.reply({
+        content: "Your post has been published.",
+        ephemeral: true,
+      });
+    }
+
+    // BUG REPORT
+    if (command === "bugreport") {
+      const details = interaction.options.getString("details");
+
+      const sent = await sendConfigured(
+        interaction.guild,
+        "reportsChannelId",
+        embed("New Bug Report", details).addFields(
+          { name: "Reported by", value: `${interaction.user.tag} (${interaction.user.id})` },
+          { name: "Status", value: "Awaiting review" }
+        )
+      );
+
+      return interaction.reply({
+        content: sent
+          ? "Your bug report has been sent to the team."
+          : "The report channel has not been configured yet.",
+        ephemeral: true,
+      });
+    }
+
+    // SUGGESTION
+    if (command === "suggest") {
+      const idea = interaction.options.getString("idea");
+
+      const sent = await sendConfigured(
+        interaction.guild,
+        "suggestionsChannelId",
+        embed("Community Suggestion", idea).addFields(
+          { name: "Suggested by", value: `${interaction.user.tag} (${interaction.user.id})` }
+        )
+      );
+
+      return interaction.reply({
+        content: sent
+          ? "Your suggestion has been submitted."
+          : "The suggestions channel has not been configured yet.",
+        ephemeral: true,
+      });
+    }
+
+    // CONFIGURATION
+    if (command === "config") {
+      if (!isAdmin(interaction)) {
+        return replyError(interaction, "Only administrators can configure the bot.");
+      }
+
+      db.config[interaction.guildId] ??= {};
+
+      const subcommand = interaction.options.getSubcommand();
+
+      if (subcommand === "channel") {
+        const key = interaction.options.getString("type");
+        const channel = interaction.options.getChannel("channel");
+
+        db.config[interaction.guildId][key] = channel.id;
+        saveData();
+
+        return interaction.reply({
+          content: `Configured ${key} as ${channel}.`,
+          ephemeral: true,
+        });
+      }
+
+      if (subcommand === "staffrole") {
+        const role = interaction.options.getRole("role");
+
+        db.config[interaction.guildId].staffRoleId = role.id;
+        saveData();
+
+        return interaction.reply({
+          content: `Support staff role set to ${role}.`,
+          ephemeral: true,
+        });
+      }
+    }
+
+    // SUPPORT TICKET CREATE
+    if (command === "support") {
+      const guild = interaction.guild;
+
+      const previousId = db.tickets[interaction.user.id];
+      if (previousId) {
+        const previous = await guild.channels.fetch(previousId)
+          .catch(() => null);
+
+        if (previous) {
+          return replyError(interaction, `You already have a ticket: ${previous}`);
         }
 
-        await sendLog(
-          message.guild,
-          `**Auto-moderation triggered**\nMember: ${message.author}\nReason: ${excessiveMentions ? 'Excessive mentions' : 'Repeated messages'}`
-        );
+        delete db.tickets[interaction.user.id];
+      }
 
-        addAudit(message.guild.id, 'auto_moderation', {
-          userId: message.author.id,
-          reason: excessiveMentions ? 'excessive_mentions' : 'repeated_messages'
+      const staffRoleId = db.config[guild.id]?.staffRoleId;
+
+      const overwrites = [
+        {
+          id: guild.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: interaction.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.AttachFiles,
+          ],
+        },
+        {
+          id: client.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels,
+            PermissionFlagsBits.AttachFiles,
+          ],
+        },
+      ];
+
+      if (staffRoleId) {
+        overwrites.push({
+          id: staffRoleId,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+          ],
+        });
+      }
+
+      const channel = await guild.channels.create({
+        name: `ticket-${interaction.user.id}`,
+        type: ChannelType.GuildText,
+        permissionOverwrites: overwrites,
+        topic: `Garden Adventures support ticket | Owner ID: ${interaction.user.id}`,
+      });
+
+      db.tickets[interaction.user.id] = channel.id;
+      saveData();
+
+      await channel.send({
+        embeds: [embed(
+          "Garden Adventures Support",
+          `Welcome ${interaction.user}.\n\nDescribe your issue and the support team will assist you.\n\nStaff can use \`/ticketclaim\` to claim this ticket. Use \`/ticketclose\` when the issue is resolved.`
+        )],
+      });
+
+      return interaction.reply({
+        content: `Your private support ticket is ready: ${channel}`,
+        ephemeral: true,
+      });
+    }
+
+    // CLAIM TICKET
+    if (command === "ticketclaim") {
+      if (!interaction.channel?.name.startsWith("ticket-")) {
+        return replyError(interaction, "Use this command inside a support ticket.");
+      }
+
+      if (!isTicketStaff(interaction)) {
+        return replyError(interaction, "Only support staff can claim tickets.");
+      }
+
+      const ownerId = interaction.channel.topic?.match(/Owner ID: (\d+)/)?.[1];
+
+      if (!ownerId) {
+        return replyError(interaction, "The ticket owner could not be identified.");
+      }
+
+      const ticket = db.tickets[ownerId];
+
+      if (ticket !== interaction.channel.id) {
+        return replyError(interaction, "This ticket is not registered in the bot's saved data.");
+      }
+
+      const existingClaim = interaction.channel.topic?.match(/Claimed by: (\d+)/)?.[1];
+
+      if (existingClaim) {
+        return replyError(interaction, `This ticket is already claimed by <@${existingClaim}>.`);
+      }
+
+      await interaction.channel.setTopic(
+        `Garden Adventures support ticket | Owner ID: ${ownerId} | Claimed by: ${interaction.user.id}`
+      );
+
+      return interaction.reply({
+        embeds: [embed("Ticket Claimed", `${interaction.user} is now handling this ticket.`)],
+      });
+    }
+
+    // CLOSE TICKET AND SAVE TRANSCRIPT
+    if (command === "ticketclose") {
+      if (!interaction.channel?.name.startsWith("ticket-")) {
+        return replyError(interaction, "Use this command inside a support ticket.");
+      }
+
+      const ownerId = interaction.channel.topic?.match(/Owner ID: (\d+)/)?.[1];
+
+      if (!ownerId) {
+        return replyError(interaction, "Could not identify the ticket owner.");
+      }
+
+      if (interaction.user.id !== ownerId && !isTicketStaff(interaction)) {
+        return replyError(interaction, "Only the ticket owner or support staff can close this ticket.");
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const messages = [];
+      let lastId;
+
+      for (let page = 0; page < 10; page++) {
+        const batch = await interaction.channel.messages.fetch({
+          limit: 100,
+          ...(lastId ? { before: lastId } : {}),
         });
 
-        return;
+        if (!batch.size) break;
+
+        messages.push(...batch.values());
+        lastId = batch.last().id;
+
+        if (batch.size < 100) break;
+      }
+
+      messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+      const transcript = messages.map(message => {
+        const time = new Date(message.createdTimestamp).toISOString();
+        const content = message.content || "[No text content]";
+        const attachments = [...message.attachments.values()]
+          .map(a => a.url)
+          .join(" ");
+
+        return `[${time}] ${message.author.tag}: ${content} ${attachments}`.trim();
+      }).join("\n");
+
+      const file = new AttachmentBuilder(
+        Buffer.from(transcript || "No messages recorded.", "utf8"),
+        { name: `transcript-${interaction.channel.id}.txt` }
+      );
+
+      await sendConfigured(
+        interaction.guild,
+        "logsChannelId",
+        embed(
+          "Support Ticket Closed",
+          `**Channel:** ${interaction.channel.name}\n**Closed by:** ${interaction.user.tag}\n**Owner ID:** ${ownerId}`
+        )
+      ).catch(() => null);
+
+      const logChannelId = db.config[interaction.guildId]?.logsChannelId;
+
+      if (logChannelId) {
+        const logChannel = await interaction.guild.channels.fetch(logChannelId)
+          .catch(() => null);
+
+        if (logChannel?.isTextBased()) {
+          await logChannel.send({
+            embeds: [embed("Ticket Transcript", `Transcript for ${interaction.channel.name}`)],
+            files: [file],
+          }).catch(console.error);
+        }
+      }
+
+      delete db.tickets[ownerId];
+      saveData();
+
+      await interaction.editReply("Ticket closed. Transcript saved where a log channel is configured.");
+
+      setTimeout(() => {
+        interaction.channel.delete("Garden Adventures ticket closed")
+          .catch(console.error);
+      }, 3000);
+    }
+
+    // EVENTS
+    if (command === "event") {
+      const action = interaction.options.getSubcommand();
+
+      if (action === "create") {
+        if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageEvents) &&
+            !interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
+          return replyError(interaction, "You need Manage Events or Manage Server permission.");
+        }
+
+        const id = Date.now().toString(36);
+        const name = interaction.options.getString("name");
+        const time = interaction.options.getString("time");
+        const details = interaction.options.getString("details");
+
+        db.events[id] = {
+          name,
+          time,
+          details,
+          creator: interaction.user.id,
+          guildId: interaction.guildId,
+          attendees: [],
+        };
+
+        saveData();
+
+        return interaction.reply({
+          embeds: [embed(
+            `Event Created: ${name}`,
+            `**ID:** \`${id}\`\n**When:** ${time}\n**Details:** ${details}\n\nUse \`/event join id:${id}\` to join.`
+          )],
+        });
+      }
+
+      if (action === "list") {
+        const events = Object.entries(db.events)
+          .filter(([, event]) => event.guildId === interaction.guildId);
+
+        const description = events.length
+          ? events.map(([id, event]) =>
+            `**${event.name}**\nID: \`${id}\`\nWhen: ${event.time}\n${event.details}\nParticipants: ${event.attendees.length}`
+          ).join("\n\n")
+          : "No events have been created yet.";
+
+        return interaction.reply({
+          embeds: [embed("Garden Adventures Events", description)],
+          ephemeral: true,
+        });
+      }
+
+      if (action === "join") {
+        const id = interaction.options.getString("id");
+        const event = db.events[id];
+
+        if (!event || event.guildId !== interaction.guildId) {
+          return replyError(interaction, "That event was not found.");
+        }
+
+        if (!event.attendees.includes(interaction.user.id)) {
+          event.attendees.push(interaction.user.id);
+          saveData();
+        }
+
+        return interaction.reply({
+          content: `You have registered for **${event.name}**.`,
+          ephemeral: true,
+        });
+      }
+
+      if (action === "cancel") {
+        if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageEvents) &&
+            !interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
+          return replyError(interaction, "You need permission to cancel events.");
+        }
+
+        const id = interaction.options.getString("id");
+        const event = db.events[id];
+
+        if (!event || event.guildId !== interaction.guildId) {
+          return replyError(interaction, "That event was not found.");
+        }
+
+        delete db.events[id];
+        saveData();
+
+        return interaction.reply({
+          content: `Event **${event.name}** has been cancelled.`,
+        });
       }
     }
 
-    const ticket = await findTicketFromChannel(message.channel.id);
+    // BALANCE
+    if (command === "balance") {
+      const user = getProfile(interaction.user.id);
+      saveData();
 
-    if (ticket && ticket.status !== 'closed' && isStaff(message.member)) {
-      if (!message.content.startsWith('/')) {
-        await forwardStaffMessage(message, ticket);
+      return interaction.reply({
+        embeds: [embed("Garden Wallet", `**Coins:** ${user.coins.toLocaleString()}`)],
+        ephemeral: true,
+      });
+    }
+
+    // DAILY REWARD
+    if (command === "daily") {
+      const user = getProfile(interaction.user.id);
+      const now = Date.now();
+      const cooldown = 24 * 60 * 60 * 1000;
+      const remaining = cooldown - (now - user.daily);
+
+      if (remaining > 0) {
+        const hours = Math.floor(remaining / 3600000);
+        const minutes = Math.floor((remaining % 3600000) / 60000);
+
+        return replyError(interaction, `You can claim again in ${hours}h ${minutes}m.`);
+      }
+
+      user.coins += 100;
+      user.daily = now;
+      saveData();
+
+      return interaction.reply({
+        embeds: [embed("Daily Garden Reward", `You received **100 coins**.\nNew balance: **${user.coins} coins**.`)],
+        ephemeral: true,
+      });
+    }
+
+    // SHOP
+    if (command === "shop") {
+      const description = Object.entries(SEEDS).map(([name, crop]) =>
+        `**${name.charAt(0).toUpperCase() + name.slice(1)}**\nPrice: ${crop.price} coins | Sale value: ${crop.reward} coins | Grow time: ${crop.growSeconds} seconds`
+      ).join("\n\n");
+
+      return interaction.reply({
+        embeds: [embed("Garden Seed Shop", description)],
+        ephemeral: true,
+      });
+    }
+
+    // BUY SEEDS
+    if (command === "buy") {
+      const user = getProfile(interaction.user.id);
+      const seed = interaction.options.getString("seed");
+      const amount = interaction.options.getInteger("amount");
+      const cost = SEEDS[seed].price * amount;
+
+      if (user.coins < cost) {
+        return replyError(interaction, `You need ${cost} coins but only have ${user.coins}.`);
+      }
+
+      user.coins -= cost;
+      user.seeds[seed] = (user.seeds[seed] || 0) + amount;
+      saveData();
+
+      return interaction.reply({
+        embeds: [embed("Seeds Purchased", `You bought **${amount} ${seed} seed(s)** for ${cost} coins.\nRemaining balance: ${user.coins} coins.`)],
+        ephemeral: true,
+      });
+    }
+
+    // GARDEN
+    if (command === "garden") {
+      const user = getProfile(interaction.user.id);
+      const action = interaction.options.getSubcommand();
+
+      if (action === "view") {
+        const plots = user.garden.length
+          ? user.garden.map((crop, i) => {
+            const ready = Date.now() >= crop.readyAt;
+            return `**Plot ${i + 1}: ${crop.seed}** — ${ready ? "Ready to harvest" : `Ready <t:${Math.floor(crop.readyAt / 1000)}:R>`}`;
+          }).join("\n")
+          : "Your garden is empty. Buy seeds and plant your first crop.";
+
+        const seeds = Object.entries(user.seeds)
+          .filter(([, amount]) => amount > 0)
+          .map(([name, amount]) => `${name}: ${amount}`)
+          .join("\n") || "No seeds";
+
+        return interaction.reply({
+          embeds: [embed(
+            "Your Garden",
+            `${plots}\n\n**Seed Inventory**\n${seeds}\n\n**Coins:** ${user.coins}`
+          )],
+          ephemeral: true,
+        });
+      }
+
+      if (action === "plant") {
+        const seed = interaction.options.getString("seed");
+
+        if (!user.seeds[seed] || user.seeds[seed] < 1) {
+          return replyError(interaction, `You do not have any ${seed} seeds. Use /buy first.`);
+        }
+
+        if (user.garden.length >= 10) {
+          return replyError(interaction, "Your garden is full. Harvest a crop first.");
+        }
+
+        user.seeds[seed]--;
+        user.garden.push({
+          seed,
+          readyAt: Date.now() + SEEDS[seed].growSeconds * 1000,
+        });
+
+        saveData();
+
+        return interaction.reply({
+          embeds: [embed(
+            "Seed Planted",
+            `You planted a **${seed}** seed.\nIt will be ready <t:${Math.floor((Date.now() + SEEDS[seed].growSeconds * 1000) / 1000)}:R>.`
+          )],
+          ephemeral: true,
+        });
+      }
+
+      if (action === "harvest") {
+        const plot = interaction.options.getInteger("plot") - 1;
+        const crop = user.garden[plot];
+
+        if (!crop) {
+          return replyError(interaction, "That plot is empty.");
+        }
+
+        if (Date.now() < crop.readyAt) {
+          return replyError(interaction, `Your crop will be ready <t:${Math.floor(crop.readyAt / 1000)}:R>.`);
+        }
+
+        user.garden.splice(plot, 1);
+        user.inventory ??= {};
+        user.inventory[crop.seed] = (user.inventory[crop.seed] || 0) + 1;
+
+        saveData();
+
+        return interaction.reply({
+          embeds: [embed(
+            "Crop Harvested",
+            `You harvested **1 ${crop.seed}**.\nUse \`/sell crop:${crop.seed} amount:1\` to sell it.`
+          )],
+          ephemeral: true,
+        });
       }
     }
-  } catch (error) {
-    console.error('Message handler error:', error);
-  }
-});
 
-client.on('guildMemberAdd', async member => {
-  try {
-    const config = guildConfig(member.guild.id);
-    const channel = config.welcomeChannelId
-      ? member.guild.channels.cache.get(config.welcomeChannelId) ||
-        await member.guild.channels.fetch(config.welcomeChannelId).catch(() => null)
-      : null;
+    // SELL HARVESTED CROPS
+    if (command === "sell") {
+      const user = getProfile(interaction.user.id);
+      const crop = interaction.options.getString("crop");
+      const amount = interaction.options.getInteger("amount");
 
-    if (!channel?.isTextBased()) return;
+      user.inventory ??= {};
 
-    await sendV2(
-      channel,
-      `${EMOJI.Wizz} **Welcome to Wizz Air Virtual!**\n\n` +
-      `Welcome ${member}!\n\n` +
-      'Thank you for joining Wizz Air Virtual! Please read our server rules before getting started. Enjoy your flight with us!\n\n' +
-      `**Member number:** ${member.guild.memberCount}\n\n` +
-      '-# Let\\'s WIZZ'
-    );
+      if ((user.inventory[crop] || 0) < amount) {
+        return replyError(interaction, `You do not have ${amount} harvested ${crop}(s).`);
+      }
 
-    addAudit(member.guild.id, 'member_joined', { userId: member.id });
-  } catch (error) {
-    console.error('Welcome handler failed:', error);
-  }
-});
+      const earnings = SEEDS[crop].reward * amount;
 
-client.on('guildMemberRemove', async member => {
-  addAudit(member.guild.id, 'member_left', { userId: member.id });
+      user.inventory[crop] -= amount;
+      user.coins += earnings;
 
-  await sendLog(
-    member.guild,
-    `**Member left**\n${member.user?.tag || member.id} (\`${member.id}\`)`
-  );
-});
+      saveData();
 
-client.on('messageDelete', async message => {
-  if (!message.guild || message.author?.bot) return;
-
-  await sendLog(
-    message.guild,
-    `**Message deleted**\nAuthor: ${message.author || 'Unknown'}\nChannel: ${message.channel}\nContent: ${safeText(message.content || '[No cached content]', 1000)}`
-  );
-});
-
-client.on('messageUpdate', async (oldMessage, newMessage) => {
-  if (!newMessage.guild || newMessage.author?.bot) return;
-  if (oldMessage.content === newMessage.content) return;
-
-  await sendLog(
-    newMessage.guild,
-    `**Message edited**\nAuthor: ${newMessage.author || 'Unknown'}\nChannel: ${newMessage.channel}\nBefore: ${safeText(oldMessage.content || '[Unavailable]', 800)}\nAfter: ${safeText(newMessage.content || '[Unavailable]', 800)}`
-  );
-});
-
-client.on('error', error => {
-  console.error('Discord client error:', error);
-});
-
-process.on('unhandledRejection', error => {
-  console.error('Unhandled promise rejection:', error);
-});
-
-setInterval(async () => {
-  try {
-    ensureDirectories();
-
-    const backupPath = path.join(
-      BACKUP_DIR,
-      `wizz-support-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
-    );
-
-    fs.copyFileSync(DATA_FILE, backupPath);
-
-    const backups = fs.readdirSync(BACKUP_DIR)
-      .filter(name => name.endsWith('.json'))
-      .sort();
-
-    while (backups.length > 10) {
-      const old = backups.shift();
-      fs.unlinkSync(path.join(BACKUP_DIR, old));
+      return interaction.reply({
+        embeds: [embed(
+          "Crops Sold",
+          `You sold **${amount} ${crop}(s)** for **${earnings} coins**.\nNew balance: **${user.coins} coins**.`
+        )],
+        ephemeral: true,
+      });
     }
-  } catch (error) {
-    console.error('Automatic backup failed:', error);
-  }
-}, 6 * 60 * 60 * 1000).unref();
 
-if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
-  console.error('Missing DISCORD_TOKEN or CLIENT_ID in your .env file.');
-  process.exit(1);
+    // PET COLLECTION
+    if (command === "pets") {
+      const user = getProfile(interaction.user.id);
+
+      const description = user.pets.length
+        ? user.pets.map((pet, i) =>
+          `**${i + 1}. ${pet.name}** — ${pet.rarity}`
+        ).join("\n")
+        : "You have no pets yet. Use `/egg buy` to buy an egg.";
+
+      return interaction.reply({
+        embeds: [embed("Your Pet Collection", description)],
+        ephemeral: true,
+      });
+    }
+
+    // EGGS
+    if (command === "egg") {
+      const user = getProfile(interaction.user.id);
+      const action = interaction.options.getSubcommand();
+
+      if (action === "buy") {
+        const amount = interaction.options.getInteger("amount");
+        const cost = amount * 100;
+
+        if (user.coins < cost) {
+          return replyError(interaction, `You need ${cost} coins to buy ${amount} egg(s).`);
+        }
+
+        user.coins -= cost;
+        user.eggs = (user.eggs || 0) + amount;
+
+        saveData();
+
+        return interaction.reply({
+          embeds: [embed(
+            "Pet Eggs Purchased",
+            `You bought **${amount} egg(s)** for ${cost} coins.\nUse \`/egg hatch\` to hatch one.`
+          )],
+          ephemeral: true,
+        });
+      }
+
+      if (action === "hatch") {
+        if (!user.eggs || user.eggs < 1) {
+          return replyError(interaction, "You have no eggs. Use /egg buy first.");
+        }
+
+        user.eggs--;
+        const pet = choosePet();
+
+        user.pets.push({
+          name: pet.name,
+          rarity: pet.rarity,
+          obtainedAt: Date.now(),
+        });
+
+        saveData();
+
+        return interaction.reply({
+          embeds: [embed(
+            "Egg Hatched",
+            `Your egg hatched into a **${pet.name}**!\n**Rarity:** ${pet.rarity}\n**Eggs remaining:** ${user.eggs}`
+          ).setColor(pet.rarity === "Legendary" ? GOLD : GREEN)],
+        });
+      }
+    }
+
+    // LEADERBOARD
+    if (command === "leaderboard") {
+      const entries = Object.entries(db.users)
+        .sort((a, b) => b[1].coins - a[1].coins)
+        .slice(0, 10);
+
+      if (!entries.length) {
+        return interaction.reply({
+          embeds: [embed("Garden Leaderboard", "No gardeners have earned coins yet.")],
+        });
+      }
+
+      const lines = await Promise.all(entries.map(async ([id, data], index) => {
+        const user = await client.users.fetch(id).catch(() => null);
+        return `**${index + 1}.** ${user?.username || "Unknown gardener"} — ${data.coins.toLocaleString()} coins`;
+      }));
+
+      return interaction.reply({
+        embeds: [embed("Richest Gardeners", lines.join("\n"))],
+      });
+    }
+
+  } catch (error) {
+    console.error(`Error in /${command}:`, error);
+    await replyError(
+      interaction,
+      "Something went wrong. Check the bot console or contact an administrator."
+    ).catch(() => null);
+  }
+});
+
+// ======================================================
+// ERROR HANDLING AND STARTUP
+// ======================================================
+
+client.on("error", error => {
+  console.error("Discord client error:", error);
+});
+
+process.on("unhandledRejection", error => {
+  console.error("Unhandled rejection:", error);
+});
+
+async function startBot() {
+  try {
+    await registerCommands();
+    await client.login(TOKEN);
+  } catch (error) {
+    console.error("Bot startup failed:", error);
+    process.exit(1);
+  }
 }
 
-client.login(process.env.DISCORD_TOKEN);
+startBot();
