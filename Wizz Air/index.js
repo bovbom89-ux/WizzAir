@@ -25,26 +25,22 @@ const {
   PollLayoutType,
 } = require("discord.js");
 
-// ============================================================
-// COSTA AUTOMATIONS
-// Discord.js v14.19+
-// Components V2 | Costa burgundy #650014
-// ============================================================
-
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
 
 const BURGUNDY = 0x650014;
-const SUCCESS_REACTION = "✅";
 const ADMIN = PermissionFlagsBits.Administrator;
+const SUCCESS_REACTION = "✅";
+const EPHEMERAL_V2 = MessageFlags.Ephemeral | MessageFlags.IsComponentsV2;
+const PUBLIC_V2 = MessageFlags.IsComponentsV2;
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "costa-data.json");
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   throw new Error(
-    "Set DISCORD_TOKEN, DISCORD_CLIENT_ID and DISCORD_GUILD_ID."
+    "Set DISCORD_TOKEN, DISCORD_CLIENT_ID and DISCORD_GUILD_ID in your .env file."
   );
 }
 
@@ -73,10 +69,7 @@ function loadData() {
   }
 
   return {
-    config: {
-      supportRoleId: null,
-      supportCategoryId: null,
-    },
+    config: { supportRoleId: null, supportCategoryId: null },
     tickets: {},
     infractions: {},
     staffNotes: {},
@@ -106,22 +99,8 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-const EPHEMERAL_V2 =
-  MessageFlags.Ephemeral | MessageFlags.IsComponentsV2;
-
-const PUBLIC_V2 = MessageFlags.IsComponentsV2;
-
-// ============================================================
-// GENERAL HELPERS
-// ============================================================
-
 function makeId() {
   return crypto.randomBytes(5).toString("hex");
-}
-
-function formatTimestamp(date = new Date()) {
-  const unix = Math.floor(date.getTime() / 1000);
-  return `<t:${unix}:F> (<t:${unix}:R>)`;
 }
 
 function safeText(value, max = 1800) {
@@ -129,6 +108,10 @@ function safeText(value, max = 1800) {
     .replace(/@everyone/g, "@\u200beveryone")
     .replace(/@here/g, "@\u200bhere")
     .slice(0, max);
+}
+
+function formatTimestamp(date = new Date()) {
+  return `<t:${Math.floor(new Date(date).getTime() / 1000)}:F>`;
 }
 
 function makeContainer(title, description, details = []) {
@@ -171,9 +154,7 @@ async function privateError(interaction, message) {
 async function publicV2(channel, title, description, details = [], extra = {}) {
   return channel.send({
     ...extra,
-    components: [
-      makeContainer(title, description, details),
-    ],
+    components: [makeContainer(title, description, details)],
     flags: PUBLIC_V2,
     allowedMentions: {
       parse: [],
@@ -183,9 +164,7 @@ async function publicV2(channel, title, description, details = [], extra = {}) {
 }
 
 function isAdministrator(member) {
-  return Boolean(
-    member?.permissions?.has(PermissionFlagsBits.Administrator)
-  );
+  return Boolean(member?.permissions?.has(ADMIN));
 }
 
 function isSupportStaff(member) {
@@ -198,17 +177,13 @@ function isSupportStaff(member) {
 
 function getActiveTicket(userId) {
   return Object.values(data.tickets).find(
-    ticket =>
-      ticket.userId === userId &&
-      ticket.status === "open"
+    ticket => ticket.userId === userId && ticket.status === "open"
   );
 }
 
 function getTicketByChannel(channelId) {
   return Object.values(data.tickets).find(
-    ticket =>
-      ticket.channelId === channelId &&
-      ticket.status === "open"
+    ticket => ticket.channelId === channelId && ticket.status === "open"
   );
 }
 
@@ -224,45 +199,109 @@ async function reactSuccess(message) {
   try {
     await message.react(SUCCESS_REACTION);
   } catch (error) {
-    console.error("Could not add ModMail success reaction:", error);
+    console.error("Could not add success reaction:", error);
   }
 }
 
 async function sendUserDM(user, title, description, details = []) {
   return user.send({
-    components: [
-      makeContainer(title, description, details),
-    ],
+    components: [makeContainer(title, description, details)],
     flags: PUBLIC_V2,
     allowedMentions: { parse: [] },
   });
 }
 
-function getMessageDetails(message) {
+// ============================================================
+// PUBLIC INFORMATION COMMANDS
+// ============================================================
+
+function formatDuration(ms) {
+  const totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes || parts.length === 0) parts.push(`${minutes}m`);
+
+  return parts.join(" ");
+}
+
+async function showServerInfo(interaction) {
+  const guild = interaction.guild;
+  const owner = await guild.fetchOwner().catch(() => null);
+  const channels = await guild.channels.fetch();
+  const textChannels = channels.filter(
+    c => c && c.type === ChannelType.GuildText
+  ).size;
+  const voiceChannels = channels.filter(
+    c => c && c.type === ChannelType.GuildVoice
+  ).size;
+  const categories = channels.filter(
+    c => c && c.type === ChannelType.GuildCategory
+  ).size;
+
+  return privateReply(
+    interaction,
+    "Server Information",
+    `Information about **${safeText(guild.name, 100)}**.`,
+    [
+      `**Server ID:** \`${guild.id}\``,
+      `**Owner:** ${owner ? `<@${owner.id}>` : "Unavailable"}`,
+      `**Created:** ${formatTimestamp(guild.createdAt)}`,
+      `**Members:** ${guild.memberCount}`,
+      `**Text channels:** ${textChannels}`,
+      `**Voice channels:** ${voiceChannels}`,
+      `**Categories:** ${categories}`,
+      `**Roles:** ${guild.roles.cache.size}`,
+      `**Boost level:** ${guild.premiumTier}`,
+      `**Boosts:** ${guild.premiumSubscriptionCount ?? 0}`,
+    ]
+  );
+}
+
+async function showUserInfo(interaction) {
+  const user = interaction.options.getUser("member") || interaction.user;
+  const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+
   const details = [
-    `**Username:** ${safeText(message.author.username, 100)}`,
-    `**Display name:** ${safeText(
-      message.author.globalName || message.author.username,
-      100
-    )}`,
-    `**User mention:** <@${message.author.id}>`,
-    `**User ID:** \`${message.author.id}\``,
-    `**Account created:** ${formatTimestamp(message.author.createdAt)}`,
-    `**Message received:** ${formatTimestamp(message.createdAt)}`,
-    "**Original message:**",
-    safeText(message.content || "(No text message provided.)", 3000),
+    `**Username:** ${safeText(user.username, 100)}`,
+    `**Display name:** ${safeText(user.globalName || user.username, 100)}`,
+    `**User ID:** \`${user.id}\``,
+    `**Account created:** ${formatTimestamp(user.createdAt)}`,
+    `**Bot account:** ${user.bot ? "Yes" : "No"}`,
   ];
 
-  if (message.attachments.size) {
+  if (member) {
     details.push(
-      "**Attachments:**",
-      ...[...message.attachments.values()]
-        .slice(0, 5)
-        .map(attachment => safeText(attachment.url, 500))
+      `**Joined server:** ${member.joinedAt ? formatTimestamp(member.joinedAt) : "Unavailable"}`,
+      `**Server nickname:** ${safeText(member.nickname || "None", 100)}`,
+      `**Highest role:** ${safeText(member.roles.highest.name, 100)}`,
+      `**Roles:** ${
+        member.roles.cache
+          .filter(role => role.id !== interaction.guild.id)
+          .sort((a, b) => b.position - a.position)
+          .map(role => `<@&${role.id}>`)
+          .slice(0, 15)
+          .join(", ") || "None"
+      }`
     );
+
+    if (member.premiumSince) {
+      details.push(`**Server boosting since:** ${formatTimestamp(member.premiumSince)}`);
+    }
+  } else {
+    details.push("**Server membership:** Not currently in this server");
   }
 
-  return details;
+  return privateReply(
+    interaction,
+    "User Information",
+    `Information about <@${user.id}>.`,
+    details
+  );
 }
 
 // ============================================================
@@ -288,16 +327,12 @@ function buildModmailConfigPanel() {
     "Configure the Costa Coffee support inbox.",
     [
       `**Support role:** ${
-        data.config.supportRoleId
-          ? `<@&${data.config.supportRoleId}>`
-          : "Not configured"
+        data.config.supportRoleId ? `<@&${data.config.supportRoleId}>` : "Not configured"
       }`,
       `**Ticket category:** ${
-        data.config.supportCategoryId
-          ? `<#${data.config.supportCategoryId}>`
-          : "Not configured"
+        data.config.supportCategoryId ? `<#${data.config.supportCategoryId}>` : "Not configured"
       }`,
-      "**How it works:** Members DM the bot. The bot creates a private ticket, forwards messages to staff, and lets authorised staff close the conversation.",
+      "**How it works:** Members DM the bot to open a private support conversation.",
     ]
   );
 
@@ -322,52 +357,38 @@ async function showModmailConfig(interaction) {
 
 async function handleModmailConfigSelection(interaction, type) {
   if (!interaction.inGuild() || !isAdministrator(interaction.member)) {
-    return privateError(
-      interaction,
-      "You need Administrator permission to configure ModMail."
-    );
+    return privateError(interaction, "Administrator permission is required.");
   }
 
   if (type === "role") {
-    const roleId = interaction.values[0];
-    const role = await interaction.guild.roles.fetch(roleId).catch(() => null);
+    const role = await interaction.guild.roles
+      .fetch(interaction.values[0])
+      .catch(() => null);
 
-    if (
-      !role ||
-      role.id === interaction.guild.id ||
-      role.managed
-    ) {
+    if (!role || role.id === interaction.guild.id || role.managed) {
       return privateError(interaction, "Choose a valid support role.");
     }
 
-    data.config.supportRoleId = roleId;
-  } else if (type === "category") {
-    const categoryId = interaction.values[0];
+    data.config.supportRoleId = role.id;
+  } else {
     const category = await interaction.guild.channels
-      .fetch(categoryId)
+      .fetch(interaction.values[0])
       .catch(() => null);
 
-    if (
-      !category ||
-      category.type !== ChannelType.GuildCategory
-    ) {
+    if (!category || category.type !== ChannelType.GuildCategory) {
       return privateError(interaction, "Choose a valid ticket category.");
     }
 
-    data.config.supportCategoryId = categoryId;
+    data.config.supportCategoryId = category.id;
   }
 
   try {
     saveData();
   } catch (error) {
     console.error("Could not save ModMail configuration:", error);
-    return privateError(
-      interaction,
-      "The configuration could not be saved. Check the bot's file permissions."
-    );
+    return privateError(interaction, "Could not save the configuration.");
   }
 
-  // Update the original configuration panel so the saved settings are visible.
   return interaction.update({
     components: [buildModmailConfigPanel()],
     allowedMentions: { parse: [] },
@@ -378,6 +399,30 @@ async function handleModmailConfigSelection(interaction, type) {
 // MODMAIL TICKET CREATION
 // ============================================================
 
+function getMessageDetails(message) {
+  const details = [
+    `**Username:** ${safeText(message.author.username, 100)}`,
+    `**Display name:** ${safeText(message.author.globalName || message.author.username, 100)}`,
+    `**User mention:** <@${message.author.id}>`,
+    `**User ID:** \`${message.author.id}\``,
+    `**Account created:** ${formatTimestamp(message.author.createdAt)}`,
+    `**Message received:** ${formatTimestamp(message.createdAt)}`,
+    "**Original message:**",
+    safeText(message.content || "(No text message provided.)", 3000),
+  ];
+
+  if (message.attachments.size) {
+    details.push(
+      "**Attachments:**",
+      ...[...message.attachments.values()]
+        .slice(0, 5)
+        .map(a => safeText(a.url, 500))
+    );
+  }
+
+  return details;
+}
+
 async function createTicket(user, firstMessage) {
   const { supportRoleId, supportCategoryId } = data.config;
 
@@ -387,18 +432,12 @@ async function createTicket(user, firstMessage) {
       "Costa Coffee Support",
       "Our support inbox is not configured yet. Please try again later."
     ).catch(() => {});
-
-    console.error("Cannot open ModMail ticket: configuration is incomplete.");
     return null;
   }
 
   const guild = await client.guilds.fetch(GUILD_ID);
-  const category = await guild.channels
-    .fetch(supportCategoryId)
-    .catch(() => null);
-  const supportRole = await guild.roles
-    .fetch(supportRoleId)
-    .catch(() => null);
+  const category = await guild.channels.fetch(supportCategoryId).catch(() => null);
+  const supportRole = await guild.roles.fetch(supportRoleId).catch(() => null);
   const botMember = await guild.members.fetchMe().catch(() => null);
 
   if (
@@ -407,7 +446,6 @@ async function createTicket(user, firstMessage) {
     !supportRole ||
     !botMember
   ) {
-    console.error("ModMail role, category or bot member is invalid.");
     await sendUserDM(
       user,
       "Costa Coffee Support",
@@ -416,28 +454,15 @@ async function createTicket(user, firstMessage) {
     return null;
   }
 
-  const botPermissions = category.permissionsFor(botMember);
-
-  if (
-    !botPermissions?.has([
-      PermissionFlagsBits.ViewChannel,
-      PermissionFlagsBits.ManageChannels,
-    ])
-  ) {
-    console.error("Bot needs View Channel and Manage Channels permissions.");
-    await sendUserDM(
-      user,
-      "Costa Coffee Support",
-      "The support inbox is temporarily unavailable. Please try again later."
-    ).catch(() => {});
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    console.error("The bot needs Manage Channels permission.");
     return null;
   }
 
   const ticketId = makeId();
-  const safeUsername = user.username
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 35) || "member";
+  const safeUsername =
+    user.username.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 35) ||
+    "member";
 
   let channel;
 
@@ -484,7 +509,6 @@ async function createTicket(user, firstMessage) {
       closedAt: null,
       closedBy: null,
     };
-
     saveData();
 
     const member = await guild.members.fetch(user.id).catch(() => null);
@@ -493,11 +517,7 @@ async function createTicket(user, firstMessage) {
     details.splice(
       4,
       0,
-      `**Server joined:** ${
-        member
-          ? formatTimestamp(member.joinedAt || new Date())
-          : "Not available"
-      }`,
+      `**Server joined:** ${member?.joinedAt ? formatTimestamp(member.joinedAt) : "Not available"}`,
       `**Ticket ID:** \`${ticketId}\``
     );
 
@@ -509,10 +529,7 @@ async function createTicket(user, firstMessage) {
     const container = makeContainer(
       "New Support Enquiry",
       "A member has contacted Costa Coffee Support.",
-      [
-        `**Support team:** <@&${supportRole.id}>`,
-        ...details,
-      ]
+      [`**Support team:** <@&${supportRole.id}>`, ...details]
     );
 
     container.addSeparatorComponents(new SeparatorBuilder());
@@ -520,41 +537,30 @@ async function createTicket(user, firstMessage) {
       new ActionRowBuilder().addComponents(closeButton)
     );
 
-    // Components V2 cannot be sent with ordinary message content.
-    // Put the role mention inside the V2 container instead.
     await channel.send({
       components: [container],
       flags: PUBLIC_V2,
-      allowedMentions: {
-        parse: [],
-        roles: [supportRole.id],
-      },
+      allowedMentions: { parse: [], roles: [supportRole.id] },
     });
 
-    // The ticket is now created and the original message is in the staff channel.
     await reactSuccess(firstMessage);
 
-    // A failed confirmation DM must not delete a valid ticket.
     await sendUserDM(
       user,
       "Costa Coffee Support",
       "Staff will get back to you shortly.",
       [
-        "Thank you for contacting Costa Coffee Support. Your message has been received and will be reviewed by our support team shortly.",
+        "Thank you for contacting Costa Coffee Support. Your message has been received.",
         `**Ticket reference:** \`${ticketId}\``,
       ]
-    ).catch(error => {
-      console.error("Could not send ModMail confirmation DM:", error);
-    });
+    ).catch(error => console.error("Confirmation DM failed:", error));
 
     return channel;
   } catch (error) {
     console.error("Could not create ModMail ticket:", error);
 
-    if (data.tickets[ticketId]) {
-      delete data.tickets[ticketId];
-      saveData();
-    }
+    delete data.tickets[ticketId];
+    saveData();
 
     if (channel) {
       await channel.delete("ModMail ticket setup failed").catch(() => {});
@@ -563,21 +569,15 @@ async function createTicket(user, firstMessage) {
     await sendUserDM(
       user,
       "Costa Coffee Support",
-      "We could not open your support ticket just now. Please try again later."
+      "We could not open your support ticket. Please try again later."
     ).catch(() => {});
 
     return null;
   }
 }
 
-// ============================================================
-// FORWARD MEMBER FOLLOW-UP MESSAGES
-// ============================================================
-
 async function forwardMemberMessage(message, ticket) {
-  const channel = await client.channels
-    .fetch(ticket.channelId)
-    .catch(() => null);
+  const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
 
   if (!channel || !channel.isTextBased()) {
     ticket.status = "closed";
@@ -588,7 +588,7 @@ async function forwardMemberMessage(message, ticket) {
     await sendUserDM(
       message.author,
       "Costa Coffee Support",
-      "Your previous support conversation is no longer available. Please send your message again to open a new ticket."
+      "Your previous conversation is no longer available. Send another message to open a new ticket."
     ).catch(() => {});
 
     return false;
@@ -605,29 +605,16 @@ async function forwardMemberMessage(message, ticket) {
   if (message.attachments.size) {
     details.push(
       "**Attachments:**",
-      ...[...message.attachments.values()]
-        .slice(0, 5)
-        .map(attachment => safeText(attachment.url, 500))
+      ...[...message.attachments.values()].slice(0, 5).map(a => safeText(a.url, 500))
     );
   }
 
   try {
-    await publicV2(
-      channel,
-      "Member Message",
-      "A member sent a message to the support team.",
-      details
-    );
-
+    await publicV2(channel, "Member Message", "A member sent a message.", details);
     await reactSuccess(message);
     return true;
   } catch (error) {
-    console.error("Could not forward member ModMail message:", error);
-    await sendUserDM(
-      message.author,
-      "Costa Coffee Support",
-      "Your latest message could not be forwarded. Please try again shortly."
-    ).catch(() => {});
+    console.error("Could not forward member message:", error);
     return false;
   }
 }
@@ -640,31 +627,22 @@ client.on("messageCreate", async originalMessage => {
   let message = originalMessage;
 
   try {
-    if (message.partial) {
-      message = await message.fetch();
-    }
-
+    if (message.partial) message = await message.fetch();
     if (message.author.bot || message.webhookId) return;
 
-    // --------------------------------------------------------
-    // MEMBER DIRECT MESSAGES
-    // --------------------------------------------------------
     if (!message.guild) {
       const userId = message.author.id;
-
-      // Prevent two rapid DMs from creating two tickets.
       if (userMessageLocks.has(userId)) return;
       userMessageLocks.add(userId);
 
       try {
-        let ticket = getActiveTicket(userId);
+        const ticket = getActiveTicket(userId);
 
         if (!ticket) {
           await createTicket(message.author, message);
-          return;
+        } else {
+          await forwardMemberMessage(message, ticket);
         }
-
-        await forwardMemberMessage(message, ticket);
       } finally {
         userMessageLocks.delete(userId);
       }
@@ -672,25 +650,19 @@ client.on("messageCreate", async originalMessage => {
       return;
     }
 
-    // --------------------------------------------------------
-    // STAFF MESSAGES IN THE CONFIGURED SERVER
-    // --------------------------------------------------------
     if (message.guild.id !== GUILD_ID) return;
 
     const ticket = getTicketByChannel(message.channel.id);
-    if (!ticket) return;
-
-    if (!isSupportStaff(message.member)) return;
+    if (!ticket || !isSupportStaff(message.member)) return;
 
     const user = await fetchUser(ticket.userId);
 
     if (!user) {
-      await publicV2(
+      return publicV2(
         message.channel,
         "Delivery Failed",
-        "The member account could not be reached. The message was not delivered."
+        "The member account could not be reached."
       );
-      return;
     }
 
     const details = [
@@ -704,9 +676,7 @@ client.on("messageCreate", async originalMessage => {
     if (message.attachments.size) {
       details.push(
         "**Attachments:**",
-        ...[...message.attachments.values()]
-          .slice(0, 5)
-          .map(attachment => safeText(attachment.url, 500))
+        ...[...message.attachments.values()].slice(0, 5).map(a => safeText(a.url, 500))
       );
     }
 
@@ -717,15 +687,13 @@ client.on("messageCreate", async originalMessage => {
         "A member of our support team has replied to your enquiry.",
         details
       );
-
       await reactSuccess(message);
     } catch (error) {
       console.error("Could not deliver staff reply:", error);
-
       await publicV2(
         message.channel,
         "Delivery Failed",
-        "The reply could not be delivered to the member. They may have disabled direct messages."
+        "The reply could not be delivered. The member may have disabled direct messages."
       );
     }
   } catch (error) {
@@ -734,7 +702,7 @@ client.on("messageCreate", async originalMessage => {
 });
 
 // ============================================================
-// STAFF ROLE SELECTOR
+// STAFF PROMOTIONS AND DEMOTIONS
 // ============================================================
 
 async function showRoleAction(interaction, action) {
@@ -742,18 +710,12 @@ async function showRoleAction(interaction, action) {
   const reason = interaction.options.getString("reason", true);
 
   if (user.id === interaction.user.id || user.bot) {
-    return privateError(interaction, "Choose a different, non-bot member.");
+    return privateError(interaction, "Choose another non-bot member.");
   }
 
-  const target = await interaction.guild.members
-    .fetch(user.id)
-    .catch(() => null);
-
+  const target = await interaction.guild.members.fetch(user.id).catch(() => null);
   if (!target) {
-    return privateError(
-      interaction,
-      "That user is not a member of this server."
-    );
+    return privateError(interaction, "That user is not a member of this server.");
   }
 
   const actionId = makeId();
@@ -769,29 +731,18 @@ async function showRoleAction(interaction, action) {
 
   const menu = new RoleSelectMenuBuilder()
     .setCustomId(`staff_role_${actionId}`)
-    .setPlaceholder(
-      action === "promote"
-        ? "Select the role to assign"
-        : "Select the role to remove"
-    )
+    .setPlaceholder(action === "promote" ? "Select role to assign" : "Select role to remove")
     .setMinValues(1)
     .setMaxValues(1);
 
   const container = makeContainer(
     action === "promote" ? "Promote Staff Member" : "Demote Staff Member",
-    action === "promote"
-      ? "Select the Discord role to assign to this member."
-      : "Select the Discord role to remove from this member.",
-    [
-      `**Member:** <@${user.id}>`,
-      `**Reason:** ${safeText(reason, 500)}`,
-    ]
+    "Select the Discord role for this staff action.",
+    [`**Member:** <@${user.id}>`, `**Reason:** ${safeText(reason, 500)}`]
   );
 
   container.addSeparatorComponents(new SeparatorBuilder());
-  container.addActionRowComponents(
-    new ActionRowBuilder().addComponents(menu)
-  );
+  container.addActionRowComponents(new ActionRowBuilder().addComponents(menu));
 
   return interaction.reply({
     components: [container],
@@ -801,24 +752,18 @@ async function showRoleAction(interaction, action) {
 }
 
 async function handleStaffRoleSelect(interaction) {
-  const actionId = interaction.customId.replace("staff_role_", "");
+  const actionId = interaction.customId.slice("staff_role_".length);
   const pending = pendingRoleActions.get(actionId);
 
   if (!pending) {
-    return privateError(
-      interaction,
-      "This role selection has expired. Run the command again."
-    );
+    return privateError(interaction, "This role selection has expired. Run the command again.");
   }
 
   if (
     pending.actorId !== interaction.user.id ||
     pending.guildId !== interaction.guildId
   ) {
-    return privateError(
-      interaction,
-      "This role selector belongs to another administrator."
-    );
+    return privateError(interaction, "This selector belongs to another administrator.");
   }
 
   if (Date.now() - pending.createdAt > 15 * 60 * 1000) {
@@ -842,27 +787,18 @@ async function handleStaffRoleSelect(interaction) {
   }
 
   if (role.id === guild.id || role.managed) {
-    return privateError(
-      interaction,
-      "That role cannot be assigned or removed through this command."
-    );
+    return privateError(interaction, "That role cannot be assigned or removed.");
   }
 
   if (
     guild.ownerId !== actor.id &&
     actor.roles.highest.comparePositionTo(role) <= 0
   ) {
-    return privateError(
-      interaction,
-      "Your highest role must be above the selected role."
-    );
+    return privateError(interaction, "Your highest role must be above the selected role.");
   }
 
   if (botMember.roles.highest.comparePositionTo(role) <= 0) {
-    return privateError(
-      interaction,
-      "Move the bot's highest role above the selected role."
-    );
+    return privateError(interaction, "Move the bot's highest role above the selected role.");
   }
 
   if (target.id === guild.ownerId) {
@@ -873,19 +809,11 @@ async function handleStaffRoleSelect(interaction) {
     guild.ownerId !== actor.id &&
     actor.roles.highest.comparePositionTo(target.roles.highest) <= 0
   ) {
-    return privateError(
-      interaction,
-      "Your highest role must be above the target member's highest role."
-    );
+    return privateError(interaction, "Your highest role must be above the target member.");
   }
 
-  if (
-    botMember.roles.highest.comparePositionTo(target.roles.highest) <= 0
-  ) {
-    return privateError(
-      interaction,
-      "The bot's highest role must be above the target member's highest role."
-    );
+  if (botMember.roles.highest.comparePositionTo(target.roles.highest) <= 0) {
+    return privateError(interaction, "The bot's highest role must be above the target member.");
   }
 
   try {
@@ -893,20 +821,12 @@ async function handleStaffRoleSelect(interaction) {
       if (target.roles.cache.has(role.id)) {
         return privateError(interaction, "That member already has this role.");
       }
-
-      await target.roles.add(
-        role,
-        `Promotion by ${interaction.user.tag}: ${pending.reason}`
-      );
+      await target.roles.add(role, `Promotion by ${interaction.user.tag}: ${pending.reason}`);
     } else {
       if (!target.roles.cache.has(role.id)) {
         return privateError(interaction, "That member does not have this role.");
       }
-
-      await target.roles.remove(
-        role,
-        `Demotion by ${interaction.user.tag}: ${pending.reason}`
-      );
+      await target.roles.remove(role, `Demotion by ${interaction.user.tag}: ${pending.reason}`);
     }
 
     const record = {
@@ -939,252 +859,169 @@ async function handleStaffRoleSelect(interaction) {
     );
   } catch (error) {
     console.error("Staff role change failed:", error);
-    return privateError(
-      interaction,
-      "The role change failed. Check Manage Roles permission and role hierarchy."
-    );
+    return privateError(interaction, "The role change failed. Check permissions and role hierarchy.");
   }
 }
 
 // ============================================================
-// SLASH COMMAND DEFINITIONS
+// SLASH COMMANDS
 // ============================================================
 
 const commands = [
   new SlashCommandBuilder()
+    .setName("serverinfo")
+    .setDescription("View information about this server."),
+
+  new SlashCommandBuilder()
+    .setName("userinfo")
+    .setDescription("View information about a server member.")
+    .addUserOption(o =>
+      o.setName("member").setDescription("Member to look up").setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName("promote")
     .setDescription("Promote a staff member by assigning a role.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Staff member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Staff member").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("demote")
     .setDescription("Demote a staff member by removing a role.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Staff member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Staff member").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("staffnote")
     .setDescription("Manage private staff notes.")
-    .addSubcommand(s =>
-      s.setName("add").setDescription("Add a staff note.")
-        .addUserOption(o =>
-          o.setName("member").setDescription("Staff member").setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("note").setDescription("Private note").setRequired(true)
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("view").setDescription("View staff notes.")
-        .addUserOption(o =>
-          o.setName("member").setDescription("Staff member").setRequired(true)
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("remove").setDescription("Remove a staff note.")
-        .addUserOption(o =>
-          o.setName("member").setDescription("Staff member").setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("id").setDescription("Note ID").setRequired(true)
-        )
-    ),
+    .addSubcommand(s => s.setName("add").setDescription("Add a staff note.")
+      .addUserOption(o => o.setName("member").setDescription("Staff member").setRequired(true))
+      .addStringOption(o => o.setName("note").setDescription("Private note").setRequired(true)))
+    .addSubcommand(s => s.setName("view").setDescription("View staff notes.")
+      .addUserOption(o => o.setName("member").setDescription("Staff member").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a staff note.")
+      .addUserOption(o => o.setName("member").setDescription("Staff member").setRequired(true))
+      .addStringOption(o => o.setName("id").setDescription("Note ID").setRequired(true))),
 
   new SlashCommandBuilder()
     .setName("warn")
     .setDescription("Issue a moderation warning.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("timeout")
     .setDescription("Timeout a member.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Member").setRequired(true)
-    )
-    .addIntegerOption(o =>
-      o.setName("minutes").setDescription("Duration in minutes")
-        .setMinValue(1).setMaxValue(40320).setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+    .addIntegerOption(o => o.setName("minutes").setDescription("Duration in minutes")
+      .setMinValue(1).setMaxValue(40320).setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("untimeout")
     .setDescription("Remove a member's timeout.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("kick")
     .setDescription("Kick a member.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("ban")
     .setDescription("Ban a member.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Member").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("unban")
     .setDescription("Unban a user by ID.")
-    .addStringOption(o =>
-      o.setName("user_id").setDescription("User ID").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason").setDescription("Reason").setRequired(true)
-    ),
+    .addStringOption(o => o.setName("user_id").setDescription("User ID").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("purge")
     .setDescription("Delete recent messages.")
-    .addIntegerOption(o =>
-      o.setName("amount").setDescription("Number of messages")
-        .setMinValue(1).setMaxValue(100).setRequired(true)
-    ),
+    .addIntegerOption(o => o.setName("amount").setDescription("Number of messages")
+      .setMinValue(1).setMaxValue(100).setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("slowmode")
     .setDescription("Set channel slowmode.")
-    .addIntegerOption(o =>
-      o.setName("seconds").setDescription("Seconds")
-        .setMinValue(0).setMaxValue(21600).setRequired(true)
-    ),
+    .addIntegerOption(o => o.setName("seconds").setDescription("Seconds")
+      .setMinValue(0).setMaxValue(21600).setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("lock")
     .setDescription("Lock a text channel.")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("Channel to lock")
-        .addChannelTypes(ChannelType.GuildText)
-    ),
+    .addChannelOption(o => o.setName("channel").setDescription("Channel to lock")
+      .addChannelTypes(ChannelType.GuildText)),
 
   new SlashCommandBuilder()
     .setName("unlock")
     .setDescription("Unlock a text channel.")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("Channel to unlock")
-        .addChannelTypes(ChannelType.GuildText)
-    ),
+    .addChannelOption(o => o.setName("channel").setDescription("Channel to unlock")
+      .addChannelTypes(ChannelType.GuildText)),
 
   new SlashCommandBuilder()
     .setName("announce")
     .setDescription("Publish an announcement.")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("Target channel")
-        .addChannelTypes(ChannelType.GuildText).setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("title").setDescription("Announcement title").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("message").setDescription("Announcement message").setRequired(true)
-    ),
+    .addChannelOption(o => o.setName("channel").setDescription("Target channel")
+      .addChannelTypes(ChannelType.GuildText).setRequired(true))
+    .addStringOption(o => o.setName("title").setDescription("Announcement title").setRequired(true))
+    .addStringOption(o => o.setName("message").setDescription("Announcement message").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("embed")
     .setDescription("Publish a formatted Components V2 message.")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("Target channel")
-        .addChannelTypes(ChannelType.GuildText).setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("title").setDescription("Message title").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("message").setDescription("Message content").setRequired(true)
-    ),
+    .addChannelOption(o => o.setName("channel").setDescription("Target channel")
+      .addChannelTypes(ChannelType.GuildText).setRequired(true))
+    .addStringOption(o => o.setName("title").setDescription("Message title").setRequired(true))
+    .addStringOption(o => o.setName("message").setDescription("Message content").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("poll")
     .setDescription("Create a Discord poll.")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("Target channel")
-        .addChannelTypes(ChannelType.GuildText).setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("question").setDescription("Poll question").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("option_one").setDescription("First answer").setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("option_two").setDescription("Second answer").setRequired(true)
-    ),
+    .addChannelOption(o => o.setName("channel").setDescription("Target channel")
+      .addChannelTypes(ChannelType.GuildText).setRequired(true))
+    .addStringOption(o => o.setName("question").setDescription("Poll question").setRequired(true))
+    .addStringOption(o => o.setName("option_one").setDescription("First answer").setRequired(true))
+    .addStringOption(o => o.setName("option_two").setDescription("Second answer").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("infractions")
     .setDescription("View a member's infraction records.")
-    .addUserOption(o =>
-      o.setName("member").setDescription("Member").setRequired(true)
-    ),
+    .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("infraction")
     .setDescription("Manage infraction records.")
-    .addSubcommand(s =>
-      s.setName("add").setDescription("Record an infraction.")
-        .addUserOption(o =>
-          o.setName("member").setDescription("Member").setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("reason").setDescription("Rule violation").setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("action").setDescription("Action taken").setRequired(true)
-        )
-    )
-    .addSubcommand(s =>
-      s.setName("remove").setDescription("Remove an infraction.")
-        .addUserOption(o =>
-          o.setName("member").setDescription("Member").setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("id").setDescription("Infraction ID").setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName("reason").setDescription("Removal reason").setRequired(true)
-        )
-    ),
+    .addSubcommand(s => s.setName("add").setDescription("Record an infraction.")
+      .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+      .addStringOption(o => o.setName("reason").setDescription("Rule violation").setRequired(true))
+      .addStringOption(o => o.setName("action").setDescription("Action taken").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove an infraction.")
+      .addUserOption(o => o.setName("member").setDescription("Member").setRequired(true))
+      .addStringOption(o => o.setName("id").setDescription("Infraction ID").setRequired(true))
+      .addStringOption(o => o.setName("reason").setDescription("Removal reason").setRequired(true))),
 
   new SlashCommandBuilder()
     .setName("modmail")
     .setDescription("Configure ModMail.")
-    .addSubcommand(s =>
-      s.setName("config").setDescription("Configure support role and ticket category.")
-    ),
-].map(command => command.setDefaultMemberPermissions(ADMIN).toJSON());
+    .addSubcommand(s => s.setName("config").setDescription("Configure support role and ticket category.")),
+].map(command => {
+  // Public commands intentionally have no Administrator default permission.
+  if (!["serverinfo", "userinfo"].includes(command.name)) {
+    command.setDefaultMemberPermissions(ADMIN);
+  }
+
+  return command.toJSON();
+});
 
 // ============================================================
-// REGISTER COMMANDS
+// REGISTER SLASH COMMANDS
 // ============================================================
 
 async function registerCommands() {
@@ -1225,37 +1062,21 @@ client.on("interactionCreate", async interaction => {
       return await handleModmailConfigSelection(interaction, "category");
     }
 
-    // --------------------------------------------------------
-    // CLOSE MODMAIL
-    // --------------------------------------------------------
-    if (
-      interaction.isButton() &&
-      interaction.customId.startsWith("modmail_close_")
-    ) {
+    // ModMail close button.
+    if (interaction.isButton() && interaction.customId.startsWith("modmail_close_")) {
       const ticketId = interaction.customId.slice("modmail_close_".length);
       const ticket = data.tickets[ticketId];
 
       if (!ticket || ticket.status !== "open") {
-        return privateReply(
-          interaction,
-          "ModMail Already Closed",
-          "This conversation is no longer open."
-        );
+        return privateReply(interaction, "ModMail Already Closed", "This conversation is no longer open.");
       }
 
-      // A close button only applies to its own ticket channel.
       if (interaction.channelId !== ticket.channelId) {
-        return privateError(
-          interaction,
-          "This close button does not belong to this ticket channel."
-        );
+        return privateError(interaction, "This close button does not belong to this ticket.");
       }
 
       if (!interaction.inGuild() || !isSupportStaff(interaction.member)) {
-        return privateError(
-          interaction,
-          "Only authorised support staff can close this conversation."
-        );
+        return privateError(interaction, "Only authorised support staff can close this conversation.");
       }
 
       ticket.status = "closed";
@@ -1273,75 +1094,65 @@ client.on("interactionCreate", async interaction => {
             "Costa Coffee Support",
             "Your ModMail has been closed.",
             [
-              "Thank you for contacting Costa Coffee Support. Your conversation has now been closed by our support team.",
-              "If you need further assistance, send us another direct message to open a new support conversation.",
+              "Thank you for contacting Costa Coffee Support. Your conversation has now been closed.",
+              "Send another direct message if you need further assistance.",
               `**Closed by:** ${safeText(interaction.user.username, 100)}`,
-              `**Closed at:** ${formatTimestamp(new Date(ticket.closedAt))}`,
+              `**Closed at:** ${formatTimestamp(ticket.closedAt)}`,
               `**Ticket reference:** \`${ticketId}\``,
             ]
           );
-
           dmDelivered = true;
         } catch (error) {
-          console.error("Could not send ticket closure DM:", error);
+          console.error("Could not send closure DM:", error);
         }
       }
 
-      await interaction.update({
+      return interaction.update({
         components: [
-          makeContainer(
-            "ModMail Closed",
-            "This support conversation has been closed.",
-            [
-              `**Closed by:** ${safeText(interaction.user.username, 100)}`,
-              `**Closed at:** ${formatTimestamp(new Date(ticket.closedAt))}`,
-              `**Ticket reference:** \`${ticketId}\``,
-              `**Member notification:** ${dmDelivered ? "Delivered" : "Could not be delivered"}`,
-            ]
-          ),
+          makeContainer("ModMail Closed", "This support conversation has been closed.", [
+            `**Closed by:** ${safeText(interaction.user.username, 100)}`,
+            `**Closed at:** ${formatTimestamp(ticket.closedAt)}`,
+            `**Ticket reference:** \`${ticketId}\``,
+            `**Member notification:** ${dmDelivered ? "Delivered" : "Could not be delivered"}`,
+          ]),
         ],
         allowedMentions: { parse: [] },
       });
-
-      return;
     }
 
     if (!interaction.isChatInputCommand()) return;
 
-    if (!interaction.inGuild() || !isAdministrator(interaction.member)) {
-      return privateError(
-        interaction,
-        "You need the Discord Administrator permission to use this command."
-      );
+    if (!interaction.inGuild()) {
+      return privateError(interaction, "Use this command in the Costa Coffee server.");
     }
 
     const commandName = interaction.commandName;
+
+    // These two commands are intentionally available to everyone.
+    if (commandName === "serverinfo") return showServerInfo(interaction);
+    if (commandName === "userinfo") return showUserInfo(interaction);
+
+    // Every other slash command is administrator-only.
+    if (!isAdministrator(interaction.member)) {
+      return privateError(interaction, "You need the Discord Administrator permission to use this command.");
+    }
+
     const guild = interaction.guild;
 
-    // --------------------------------------------------------
-    // MODMAIL CONFIG
-    // --------------------------------------------------------
     if (commandName === "modmail") {
       return showModmailConfig(interaction);
     }
 
-    // --------------------------------------------------------
-    // PROMOTE / DEMOTE
-    // --------------------------------------------------------
     if (commandName === "promote" || commandName === "demote") {
       return showRoleAction(interaction, commandName);
     }
 
-    // --------------------------------------------------------
     // STAFF NOTES
-    // --------------------------------------------------------
     if (commandName === "staffnote") {
       const subcommand = interaction.options.getSubcommand();
       const member = interaction.options.getUser("member", true);
 
-      if (!data.staffNotes[member.id]) {
-        data.staffNotes[member.id] = [];
-      }
+      if (!data.staffNotes[member.id]) data.staffNotes[member.id] = [];
 
       if (subcommand === "add") {
         const note = interaction.options.getString("note", true);
@@ -1355,29 +1166,22 @@ client.on("interactionCreate", async interaction => {
         data.staffNotes[member.id].push(record);
         saveData();
 
-        return privateReply(
-          interaction,
-          "Staff Note Added",
-          `**Member:** <@${member.id}>\n**Note ID:** \`${record.id}\`\n**Note:** ${safeText(note)}`
-        );
+        return privateReply(interaction, "Staff Note Added", 
+          `**Member:** <@${member.id}>\n**Note ID:** \`${record.id}\`\n**Note:** ${safeText(note)}`);
       }
 
       if (subcommand === "view") {
         const notes = data.staffNotes[member.id];
 
         if (!notes.length) {
-          return privateReply(
-            interaction,
-            "Staff Notes",
-            "No notes recorded for this member."
-          );
+          return privateReply(interaction, "Staff Notes", "No notes recorded for this member.");
         }
 
         return privateReply(
           interaction,
           "Staff Notes",
-          notes.slice(-10).map(note =>
-            `**ID:** \`${note.id}\`\n**Note:** ${safeText(note.note, 500)}\n**Author:** <@${note.authorId}>\n**Date:** ${formatTimestamp(new Date(note.createdAt))}`
+          notes.slice(-10).map(n =>
+            `**ID:** \`${n.id}\`\n**Note:** ${safeText(n.note, 500)}\n**Author:** <@${n.authorId}>\n**Date:** ${formatTimestamp(n.createdAt)}`
           ).join("\n\n")
         );
       }
@@ -1385,46 +1189,32 @@ client.on("interactionCreate", async interaction => {
       if (subcommand === "remove") {
         const id = interaction.options.getString("id", true);
         const before = data.staffNotes[member.id].length;
-
-        data.staffNotes[member.id] =
-          data.staffNotes[member.id].filter(note => note.id !== id);
+        data.staffNotes[member.id] = data.staffNotes[member.id].filter(n => n.id !== id);
 
         if (before === data.staffNotes[member.id].length) {
           return privateError(interaction, "No staff note found with that ID.");
         }
 
         saveData();
-
-        return privateReply(
-          interaction,
-          "Staff Note Removed",
-          `Removed note \`${id}\` from <@${member.id}>.`
-        );
+        return privateReply(interaction, "Staff Note Removed", `Removed note \`${id}\` from <@${member.id}>.`);
       }
     }
 
-    // --------------------------------------------------------
     // INFRACTIONS
-    // --------------------------------------------------------
     if (commandName === "infractions") {
       const member = interaction.options.getUser("member", true);
       const records = data.infractions[member.id] || [];
 
       if (!records.length) {
-        return privateReply(
-          interaction,
-          "Infractions",
-          `No infractions are recorded for <@${member.id}>.`
-        );
+        return privateReply(interaction, "Infractions", `No infractions are recorded for <@${member.id}>.`);
       }
 
       return privateReply(
         interaction,
         "Infraction Records",
-        `**Member:** <@${member.id}>\n\n` +
-          records.slice(-15).map(record =>
-            `**ID:** \`${record.id}\`\n**Reason:** ${safeText(record.reason, 500)}\n**Action:** ${safeText(record.action, 200)}\n**Issued by:** <@${record.issuedBy}>\n**Date:** ${formatTimestamp(new Date(record.createdAt))}`
-          ).join("\n\n")
+        `**Member:** <@${member.id}>\n\n` + records.slice(-15).map(r =>
+          `**ID:** \`${r.id}\`\n**Reason:** ${safeText(r.reason, 500)}\n**Action:** ${safeText(r.action, 200)}\n**Issued by:** <@${r.issuedBy}>\n**Date:** ${formatTimestamp(r.createdAt)}`
+        ).join("\n\n")
       );
     }
 
@@ -1432,14 +1222,11 @@ client.on("interactionCreate", async interaction => {
       const subcommand = interaction.options.getSubcommand();
       const member = interaction.options.getUser("member", true);
 
-      if (!data.infractions[member.id]) {
-        data.infractions[member.id] = [];
-      }
+      if (!data.infractions[member.id]) data.infractions[member.id] = [];
 
       if (subcommand === "add") {
         const reason = interaction.options.getString("reason", true);
         const action = interaction.options.getString("action", true);
-
         const record = {
           id: makeId(),
           reason,
@@ -1451,49 +1238,35 @@ client.on("interactionCreate", async interaction => {
         data.infractions[member.id].push(record);
         saveData();
 
-        return privateReply(
-          interaction,
-          "Infraction Recorded",
-          `**Member:** <@${member.id}>\n**Infraction ID:** \`${record.id}\`\n**Reason:** ${safeText(reason)}\n**Action:** ${safeText(action)}`
-        );
+        return privateReply(interaction, "Infraction Recorded",
+          `**Member:** <@${member.id}>\n**Infraction ID:** \`${record.id}\`\n**Reason:** ${safeText(reason)}\n**Action:** ${safeText(action)}`);
       }
 
       if (subcommand === "remove") {
         const id = interaction.options.getString("id", true);
         const reason = interaction.options.getString("reason", true);
         const records = data.infractions[member.id];
-        const existing = records.find(record => record.id === id);
+        const existing = records.find(r => r.id === id);
 
         if (!existing) {
-          return privateError(
-            interaction,
-            "No infraction found with that ID for this member."
-          );
+          return privateError(interaction, "No infraction found with that ID for this member.");
         }
 
-        data.infractions[member.id] = records.filter(record => record.id !== id);
+        data.infractions[member.id] = records.filter(r => r.id !== id);
         saveData();
 
-        return privateReply(
-          interaction,
-          "Infraction Removed",
-          `**Member:** <@${member.id}>\n**Removed ID:** \`${id}\`\n**Removal reason:** ${safeText(reason)}\n**Removed by:** <@${interaction.user.id}>`
-        );
+        return privateReply(interaction, "Infraction Removed",
+          `**Member:** <@${member.id}>\n**Removed ID:** \`${id}\`\n**Removal reason:** ${safeText(reason)}\n**Removed by:** <@${interaction.user.id}>`);
       }
     }
 
-    // --------------------------------------------------------
-    // MODERATION COMMANDS
-    // --------------------------------------------------------
+    // MODERATION
     if (["warn", "timeout", "untimeout", "kick", "ban"].includes(commandName)) {
       const user = interaction.options.getUser("member", true);
       const member = await guild.members.fetch(user.id).catch(() => null);
       const reason = interaction.options.getString("reason", true);
 
-      if (!member) {
-        return privateError(interaction, "That member is not in this server.");
-      }
-
+      if (!member) return privateError(interaction, "That member is not in this server.");
       if (member.id === interaction.user.id || member.id === client.user.id) {
         return privateError(interaction, "You cannot target yourself or the bot.");
       }
@@ -1502,101 +1275,62 @@ client.on("interactionCreate", async interaction => {
         guild.ownerId !== interaction.user.id &&
         interaction.member.roles.highest.comparePositionTo(member.roles.highest) <= 0
       ) {
-        return privateError(
-          interaction,
-          "Your highest role must be above the target member's highest role."
-        );
+        return privateError(interaction, "Your highest role must be above the target member's highest role.");
       }
 
       if (commandName === "warn") {
         const record = {
-          id: makeId(),
-          reason,
-          action: "Warning",
-          issuedBy: interaction.user.id,
-          createdAt: new Date().toISOString(),
+          id: makeId(), reason, action: "Warning",
+          issuedBy: interaction.user.id, createdAt: new Date().toISOString(),
         };
-
         if (!data.infractions[user.id]) data.infractions[user.id] = [];
         data.infractions[user.id].push(record);
         saveData();
 
-        return privateReply(
-          interaction,
-          "Warning Issued",
-          `**Member:** <@${user.id}>\n**Reason:** ${safeText(reason)}\n**Infraction ID:** \`${record.id}\``
-        );
+        return privateReply(interaction, "Warning Issued",
+          `**Member:** <@${user.id}>\n**Reason:** ${safeText(reason)}\n**Infraction ID:** \`${record.id}\``);
       }
 
       if (commandName === "timeout") {
         const minutes = interaction.options.getInteger("minutes", true);
-        await member.timeout(minutes * 60 * 1000, reason);
+        await member.timeout(minutes * 60000, reason);
 
         if (!data.infractions[user.id]) data.infractions[user.id] = [];
         data.infractions[user.id].push({
-          id: makeId(),
-          reason,
-          action: `Timeout (${minutes} minutes)`,
-          issuedBy: interaction.user.id,
-          createdAt: new Date().toISOString(),
+          id: makeId(), reason, action: `Timeout (${minutes} minutes)`,
+          issuedBy: interaction.user.id, createdAt: new Date().toISOString(),
         });
         saveData();
 
-        return privateReply(
-          interaction,
-          "Member Timed Out",
-          `**Member:** <@${user.id}>\n**Duration:** ${minutes} minutes\n**Reason:** ${safeText(reason)}`
-        );
+        return privateReply(interaction, "Member Timed Out",
+          `**Member:** <@${user.id}>\n**Duration:** ${minutes} minutes\n**Reason:** ${safeText(reason)}`);
       }
 
       if (commandName === "untimeout") {
         await member.timeout(null, reason);
-
-        return privateReply(
-          interaction,
-          "Timeout Removed",
-          `Removed timeout for <@${user.id}>.`
-        );
+        return privateReply(interaction, "Timeout Removed", `Removed timeout for <@${user.id}>.`);
       }
 
       if (commandName === "kick") {
         await member.kick(reason);
-
         if (!data.infractions[user.id]) data.infractions[user.id] = [];
         data.infractions[user.id].push({
-          id: makeId(),
-          reason,
-          action: "Kick",
-          issuedBy: interaction.user.id,
-          createdAt: new Date().toISOString(),
+          id: makeId(), reason, action: "Kick",
+          issuedBy: interaction.user.id, createdAt: new Date().toISOString(),
         });
         saveData();
-
-        return privateReply(
-          interaction,
-          "Member Kicked",
-          `Kicked <@${user.id}>.\n**Reason:** ${safeText(reason)}`
-        );
+        return privateReply(interaction, "Member Kicked", `Kicked <@${user.id}>.\n**Reason:** ${safeText(reason)}`);
       }
 
       if (commandName === "ban") {
         await member.ban({ reason });
-
         if (!data.infractions[user.id]) data.infractions[user.id] = [];
         data.infractions[user.id].push({
-          id: makeId(),
-          reason,
-          action: "Ban",
-          issuedBy: interaction.user.id,
-          createdAt: new Date().toISOString(),
+          id: makeId(), reason, action: "Ban",
+          issuedBy: interaction.user.id, createdAt: new Date().toISOString(),
         });
         saveData();
-
-        return privateReply(
-          interaction,
-          "Member Banned",
-          `Banned <@${user.id}>.\n**Reason:** ${safeText(reason)}`
-        );
+        return privateReply(interaction, "Member Banned", `Banned <@${user.id}>.\n**Reason:** ${safeText(reason)}`);
       }
     }
 
@@ -1609,113 +1343,60 @@ client.on("interactionCreate", async interaction => {
       }
 
       await guild.members.unban(userId, reason);
-
-      return privateReply(
-        interaction,
-        "User Unbanned",
-        `Unbanned user \`${userId}\`.\n**Reason:** ${safeText(reason)}`
-      );
+      return privateReply(interaction, "User Unbanned", `Unbanned user \`${userId}\`.\n**Reason:** ${safeText(reason)}`);
     }
 
-    // --------------------------------------------------------
-    // PURGE
-    // --------------------------------------------------------
     if (commandName === "purge") {
       const amount = interaction.options.getInteger("amount", true);
 
-      if (
-        !interaction.channel?.isTextBased() ||
-        !interaction.channel.bulkDelete
-      ) {
-        return privateError(
-          interaction,
-          "This command cannot be used in this channel."
-        );
+      if (!interaction.channel?.isTextBased() || !interaction.channel.bulkDelete) {
+        return privateError(interaction, "This command cannot be used in this channel.");
       }
 
       const deleted = await interaction.channel.bulkDelete(amount, true);
-
-      return privateReply(
-        interaction,
-        "Messages Deleted",
-        `Deleted **${deleted.size}** messages. Messages older than 14 days cannot be bulk-deleted.`
-      );
+      return privateReply(interaction, "Messages Deleted",
+        `Deleted **${deleted.size}** messages. Messages older than 14 days cannot be bulk-deleted.`);
     }
 
-    // --------------------------------------------------------
-    // SLOWMODE
-    // --------------------------------------------------------
     if (commandName === "slowmode") {
       const seconds = interaction.options.getInteger("seconds", true);
 
       if (!interaction.channel?.setRateLimitPerUser) {
-        return privateError(
-          interaction,
-          "This channel does not support slowmode."
-        );
+        return privateError(interaction, "This channel does not support slowmode.");
       }
 
       await interaction.channel.setRateLimitPerUser(seconds);
-
-      return privateReply(
-        interaction,
-        "Slowmode Updated",
-        `Slowmode is now **${seconds} seconds**.`
-      );
+      return privateReply(interaction, "Slowmode Updated", `Slowmode is now **${seconds} seconds**.`);
     }
 
-    // --------------------------------------------------------
-    // LOCK / UNLOCK
-    // --------------------------------------------------------
     if (commandName === "lock" || commandName === "unlock") {
-      const channel =
-        interaction.options.getChannel("channel") || interaction.channel;
+      const channel = interaction.options.getChannel("channel") || interaction.channel;
 
       if (!channel?.permissionOverwrites) {
-        return privateError(
-          interaction,
-          "Choose a channel that supports permission overwrites."
-        );
+        return privateError(interaction, "Choose a channel that supports permission overwrites.");
       }
 
       await channel.permissionOverwrites.edit(guild.roles.everyone, {
         SendMessages: commandName === "unlock" ? null : false,
       });
 
-      return privateReply(
-        interaction,
-        commandName === "lock" ? "Channel Locked" : "Channel Unlocked",
-        `${channel} has been ${commandName === "lock" ? "locked" : "unlocked"}.`
-      );
+      return privateReply(interaction, commandName === "lock" ? "Channel Locked" : "Channel Unlocked",
+        `${channel} has been ${commandName === "lock" ? "locked" : "unlocked"}.`);
     }
 
-    // --------------------------------------------------------
-    // ANNOUNCE / EMBED
-    // --------------------------------------------------------
     if (commandName === "announce" || commandName === "embed") {
       const channel = interaction.options.getChannel("channel", true);
       const title = interaction.options.getString("title", true);
       const message = interaction.options.getString("message", true);
 
-      await publicV2(
-        channel,
-        safeText(title, 200),
-        safeText(message, 3500),
-        [
-          `Published by ${safeText(interaction.user.username, 100)} · ${formatTimestamp()}`,
-        ]
-      );
+      await publicV2(channel, safeText(title, 200), safeText(message, 3500), [
+        `Published by ${safeText(interaction.user.username, 100)} · ${formatTimestamp()}`,
+      ]);
 
-      return privateReply(
-        interaction,
-        "Message Published",
-        `Your ${commandName === "announce" ? "announcement" : "formatted message"} was published in ${channel}.`
-      );
+      return privateReply(interaction, "Message Published",
+        `Your ${commandName === "announce" ? "announcement" : "formatted message"} was published in ${channel}.`);
     }
 
-    // --------------------------------------------------------
-    // POLL
-    // --------------------------------------------------------
     if (commandName === "poll") {
       const channel = interaction.options.getChannel("channel", true);
       const question = interaction.options.getString("question", true);
@@ -1736,20 +1417,15 @@ client.on("interactionCreate", async interaction => {
         allowedMentions: { parse: [] },
       });
 
-      return privateReply(
-        interaction,
-        "Poll Published",
-        `Your poll was published in ${channel}.`
-      );
+      return privateReply(interaction, "Poll Published", `Your poll was published in ${channel}.`);
     }
   } catch (error) {
     console.error("Interaction error:", error);
 
     if (interaction.isRepliable()) {
-      const message =
-        error.code === 50013
-          ? "The bot is missing a required Discord permission."
-          : "The operation failed. Check the bot logs and its Discord permissions.";
+      const message = error.code === 50013
+        ? "The bot is missing a required Discord permission."
+        : "The operation failed. Check the bot logs and its Discord permissions.";
 
       await privateError(interaction, message).catch(() => {});
     }
@@ -1770,9 +1446,7 @@ client.once("ready", async () => {
   }
 });
 
-client.on("error", error => {
-  console.error("Discord client error:", error);
-});
+client.on("error", error => console.error("Discord client error:", error));
 
 process.on("unhandledRejection", error => {
   console.error("Unhandled promise rejection:", error);
